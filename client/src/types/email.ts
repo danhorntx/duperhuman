@@ -157,6 +157,17 @@ export interface Contact {
   last: number
 }
 
+export interface SyncMeta {
+  key: string
+  accountId: string
+  folder?: string
+  status: 'idle' | 'preloading' | 'ready' | 'error'
+  totalFetched: number
+  cursor?: number
+  updatedAt: number
+  error?: string
+}
+
 // ─── Search ───────────────────────────────────────────────────────────────────
 
 export interface SearchResult {
@@ -191,6 +202,7 @@ export interface CustomLabel {
   accountId:    string      // null/'*' for cross-account, otherwise account-scoped
   name:         string
   color:        string      // hex
+  position?:    number      // sidebar sort order; older rows default to updatedAt
   rules:        LabelRule[]
   conjunction:  RuleConjunction
   createdAt:    number

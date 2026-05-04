@@ -39,23 +39,26 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
   const closeCompose    = useUiStore(s => s.closeCompose)
   const labels          = useLabelsStore(s => s.labels)
   const loadLabels      = useLabelsStore(s => s.load)
-  const removeLabel     = useLabelsStore(s => s.remove)
-  const renameLabel     = useLabelsStore(s => s.rename)
+	  const removeLabel     = useLabelsStore(s => s.remove)
+	  const renameLabel     = useLabelsStore(s => s.rename)
+	  const moveLabel       = useLabelsStore(s => s.move)
   const toast           = useUiStore(s => s.toast)
 
   // ─ Right-click context menu state ─────────────────────────────────────────
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; labelId: string } | null>(null)
-  useEffect(() => {
-    if (!ctxMenu) return
-    const close = () => setCtxMenu(null)
-    window.addEventListener('click', close)
-    window.addEventListener('contextmenu', close)
-    window.addEventListener('keydown', e => { if (e.key === 'Escape') close() })
-    return () => {
-      window.removeEventListener('click', close)
-      window.removeEventListener('contextmenu', close)
-    }
-  }, [ctxMenu])
+	  useEffect(() => {
+	    if (!ctxMenu) return
+	    const close = () => setCtxMenu(null)
+	    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') close() }
+	    window.addEventListener('click', close)
+	    window.addEventListener('contextmenu', close)
+	    window.addEventListener('keydown', onKey)
+	    return () => {
+	      window.removeEventListener('click', close)
+	      window.removeEventListener('contextmenu', close)
+	      window.removeEventListener('keydown', onKey)
+	    }
+	  }, [ctxMenu])
 
   const handleLabelDelete = async (labelId: string, name: string) => {
     if (!confirm(`Delete label "${name}"? Emails keep their data, just lose this tag.`)) return
@@ -462,11 +465,20 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
           labels.map(l => {
             const active = isLabelActive(l.id)
             return (
-              <div
-                key={l.id}
-                className="relative w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-sm transition-all duration-100 mb-0.5 group/label cursor-pointer"
-                onClick={() => setActiveFolder({ kind: 'label', id: l.id })}
-                onDoubleClick={() => openLabelManager(l.id)}
+	              <div
+	                key={l.id}
+	                role="button"
+	                tabIndex={0}
+	                data-no-drag="true"
+	                className="relative w-full flex items-center gap-2.5 px-2.5 py-1.5 rounded-lg text-sm transition-all duration-100 mb-0.5 group/label cursor-pointer"
+	                onClick={() => setActiveFolder({ kind: 'label', id: l.id })}
+	                onKeyDown={e => {
+	                  if (e.key === 'Enter') setActiveFolder({ kind: 'label', id: l.id })
+	                  if (e.key === 'F2') handleLabelRename(l.id, l.name)
+	                  if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowUp') moveLabel(l.id, 'up')
+	                  if ((e.metaKey || e.ctrlKey) && e.key === 'ArrowDown') moveLabel(l.id, 'down')
+	                }}
+	                onDoubleClick={() => openLabelManager(l.id)}
                 onContextMenu={e => {
                   e.preventDefault()
                   e.stopPropagation()
@@ -481,15 +493,23 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
                 <span className="flex-1 text-left truncate">{l.name}</span>
                 {/* Hover actions — visible on label hover only */}
                 <div className="opacity-0 group-hover/label:opacity-100 flex items-center gap-0.5 transition-opacity">
-                  <button
-                    onClick={e => { e.stopPropagation(); openLabelManager(l.id) }}
+	                  <button
+	                    onClick={e => { e.stopPropagation(); openLabelManager(l.id) }}
                     title="Edit rules"
                     className="p-0.5 rounded hover:bg-[var(--bg-overlay)]"
                     style={{ color: 'var(--text-muted)' }}
                   >
                     <GearSixIcon size={11} weight="duotone" />
-                  </button>
-                  <button
+	                  </button>
+	                  <button
+	                    onClick={e => { e.stopPropagation(); handleLabelRename(l.id, l.name) }}
+	                    title="Rename label"
+	                    className="p-0.5 rounded hover:bg-[var(--bg-overlay)]"
+	                    style={{ color: 'var(--text-muted)' }}
+	                  >
+	                    <span style={{ width: 11, display: 'inline-block', textAlign: 'center', fontSize: 11 }}>R</span>
+	                  </button>
+	                  <button
                     onClick={e => { e.stopPropagation(); handleLabelDelete(l.id, l.name) }}
                     title="Delete label"
                     className="p-0.5 rounded hover:bg-[var(--bg-overlay)]"
@@ -509,8 +529,9 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
         const lbl = labels.find(l => l.id === ctxMenu.labelId)
         if (!lbl) return null
         return (
-          <div
-            className="fixed z-[80] rounded-lg overflow-hidden text-sm"
+	              <div
+	            data-no-drag="true"
+	            className="fixed z-[80] rounded-lg overflow-hidden text-sm"
             style={{
               left:        Math.min(ctxMenu.x, window.innerWidth - 200),
               top:         Math.min(ctxMenu.y, window.innerHeight - 160),
@@ -528,13 +549,27 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
               <GearSixIcon size={12} weight="duotone" />
               Edit rules
             </button>
-            <button
-              onClick={() => { setCtxMenu(null); handleLabelRename(lbl.id, lbl.name) }}
+	            <button
+	              onClick={() => { setCtxMenu(null); handleLabelRename(lbl.id, lbl.name) }}
               className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-active)] transition-colors text-[var(--text-primary)]"
             >
               <span style={{ width: 12, display: 'inline-block', textAlign: 'center' }}>✎</span>
-              Rename
-            </button>
+	              Rename
+	            </button>
+	            <button
+	              onClick={() => { setCtxMenu(null); moveLabel(lbl.id, 'up') }}
+	              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-active)] transition-colors text-[var(--text-primary)]"
+	            >
+	              <span style={{ width: 12, display: 'inline-block', textAlign: 'center' }}>↑</span>
+	              Move up
+	            </button>
+	            <button
+	              onClick={() => { setCtxMenu(null); moveLabel(lbl.id, 'down') }}
+	              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-[var(--bg-active)] transition-colors text-[var(--text-primary)]"
+	            >
+	              <span style={{ width: 12, display: 'inline-block', textAlign: 'center' }}>↓</span>
+	              Move down
+	            </button>
             <div style={{ borderTop: '1px solid var(--border-subtle)' }} />
             <button
               onClick={() => { setCtxMenu(null); handleLabelDelete(lbl.id, lbl.name) }}

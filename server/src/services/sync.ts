@@ -3,7 +3,7 @@ import { fetchEmails, type ImapAccount } from './imap.js'
 // ─── Folder name normalisation ────────────────────────────────────────────────
 // Gmail uses [Gmail]/… prefixes; other providers use bare names.
 
-const GMAIL_FOLDER_MAP: Record<string, string> = {
+export const GMAIL_FOLDER_MAP: Record<string, string> = {
   'Sent':     '[Gmail]/Sent Mail',
   'Drafts':   '[Gmail]/Drafts',
   'Trash':    '[Gmail]/Trash',
@@ -12,6 +12,8 @@ const GMAIL_FOLDER_MAP: Record<string, string> = {
   'All Mail': '[Gmail]/All Mail',
 }
 
+const GMAIL_REVERSE_FOLDER_MAP = new Map(Object.entries(GMAIL_FOLDER_MAP).map(([logical, real]) => [real.toLowerCase(), logical]))
+
 function isGmail(host: string) {
   return host.toLowerCase().includes('gmail') || host.toLowerCase().includes('googlemail')
 }
@@ -19,6 +21,11 @@ function isGmail(host: string) {
 export function resolveImapFolder(imapHost: string, logicalFolder: string): string {
   if (isGmail(imapHost)) return GMAIL_FOLDER_MAP[logicalFolder] ?? logicalFolder
   return logicalFolder
+}
+
+export function logicalFolderName(imapHost: string, folder: string): string {
+  if (!isGmail(imapHost)) return folder
+  return GMAIL_REVERSE_FOLDER_MAP.get(folder.toLowerCase()) ?? folder
 }
 
 // ─── Per-account operation queue (prevents concurrent openBox on same conn) ───
@@ -55,6 +62,7 @@ const folderCache = new Map<string, {
 }>()
 
 const CACHE_TTL = 30_000 // 30s
+const BACKGROUND_FOLDERS = ['INBOX', 'Sent', 'Drafts', 'Trash', 'Spam'] as const
 
 export function registerAccount(account: StoredAccount) {
   accountStore.set(account.id, account)
@@ -150,7 +158,9 @@ export function startBackgroundSync(intervalMs = 30_000) {
       if (backgroundInFlight.has(account.id)) continue
       try {
         backgroundInFlight.add(account.id)
-        await syncFolder(account.id, 'INBOX', 50, 0, true)
+        for (const folder of BACKGROUND_FOLDERS) {
+          await syncFolder(account.id, folder, 50, 0, true)
+        }
       } catch (err) {
         console.error(`Background sync failed for ${account.id}:`, err)
       } finally {

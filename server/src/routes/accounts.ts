@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify'
-import { registerAccount, getAccount, listAccounts, removeAccount } from '../services/sync.js'
+import { registerAccount, getAccount, listAccounts, removeAccount, logicalFolderName } from '../services/sync.js'
 import { verifySmtp, clearTransport } from '../services/smtp.js'
 import { listFolders, closeConnection } from '../services/imap.js'
 import crypto from 'crypto'
@@ -42,7 +42,7 @@ export async function accountRoutes(app: FastifyInstance) {
 
   // Add account
   app.post<{
-    Body: {
+	    Body: {
 	      id?: string; name: string; email: string; password: string
       imapHost: string; imapPort: number; imapTls: boolean
       smtpHost: string; smtpPort: number; smtpSecure: boolean
@@ -116,6 +116,23 @@ export async function accountRoutes(app: FastifyInstance) {
     const account = getAccount(req.params.id)
     if (!account) return reply.status(404).send({ error: 'Not found' })
     const folders = await listFolders(account)
-    return { folders }
+    return {
+      folders: folders.map(path => {
+        const name = logicalFolderName(account.imapHost, path)
+        return { name, path, role: folderRole(name) }
+      }),
+    }
   })
+}
+
+function folderRole(name: string) {
+  const n = name.toLowerCase()
+  if (n === 'inbox') return 'inbox'
+  if (n === 'sent' || n.includes('sent mail')) return 'sent'
+  if (n === 'drafts' || n.includes('draft')) return 'drafts'
+  if (n === 'trash' || n.includes('bin') || n.includes('deleted')) return 'trash'
+  if (n === 'spam' || n.includes('junk')) return 'spam'
+  if (n === 'starred') return 'starred'
+  if (n === 'all mail' || n === 'archive') return 'archive'
+  return undefined
 }

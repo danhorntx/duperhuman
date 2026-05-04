@@ -188,7 +188,7 @@ function AppInner() {
 }
 
 export default function App() {
-  const { setAccounts, addAccount, setActiveAccount, loadEmails } = useEmailStore()
+  const { setAccounts, addAccount, setActiveAccount, loadEmails, preloadAllMail } = useEmailStore()
   const [ready,      setReady]      = useState(false)
   const [hasAccount, setHasAccount] = useState(false)
 
@@ -208,19 +208,20 @@ export default function App() {
 	                registered.push(acc)
 	                await db.accounts.put(acc)
 	              } catch {
-                // If already registered (server kept it), try listing
-              }
-            }
+	                // If already registered (server kept it), try listing
+	              }
+	            }
             // Fall back to server list if registration failed for all
             const serverAccounts = registered.length > 0
               ? registered
               : await accountsApi.list()
 
-            if (serverAccounts.length > 0) {
-	          setAccounts(serverAccounts)
-	          await db.accounts.bulkPut(serverAccounts)
-              await loadEmails()
-              setHasAccount(true)
+	            if (serverAccounts.length > 0) {
+	              setAccounts(serverAccounts)
+	              await db.accounts.bulkPut(serverAccounts)
+	              await loadEmails()
+	              preloadAllMail(serverAccounts[0]?.id, 'auto')
+	              setHasAccount(true)
               setReady(true)
               return
             }
@@ -229,9 +230,11 @@ export default function App() {
 
         // ── 2. No persisted accounts — check server (dev / web mode) ──────
         const serverAccounts = await accountsApi.list()
-        if (serverAccounts.length > 0) {
-          setAccounts(serverAccounts)
-          await loadEmails()
+	        if (serverAccounts.length > 0) {
+	          setAccounts(serverAccounts)
+	          await db.accounts.bulkPut(serverAccounts)
+	          await loadEmails()
+	          preloadAllMail(serverAccounts[0]?.id, 'auto')
           setHasAccount(true)
           setReady(true)
           return
@@ -239,18 +242,20 @@ export default function App() {
 
         // ── 3. Fall back to local IndexedDB cache (offline) ───────────────
         const local = await db.accounts.toArray()
-        if (local.length > 0) {
-	      setAccounts(local)
-          await loadEmails()
+	        if (local.length > 0) {
+	          setAccounts(local)
+	          await loadEmails()
+	          preloadAllMail(local[0]?.id, 'auto')
           setHasAccount(true)
         }
       } catch (err) {
         console.error('boot error', err)
         // Try IndexedDB fallback
         const local = await db.accounts.toArray()
-        if (local.length > 0) {
-          setAccounts(local)
-          await loadEmails()
+	        if (local.length > 0) {
+	          setAccounts(local)
+	          await loadEmails()
+	          preloadAllMail(local[0]?.id, 'auto')
           setHasAccount(true)
         }
       } finally {
@@ -269,6 +274,7 @@ export default function App() {
     addAccount(account)
     setActiveAccount(account.id)
     await loadEmails()
+    preloadAllMail(account.id, 'full')
     setHasAccount(true)
   }
 

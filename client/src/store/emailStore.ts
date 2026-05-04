@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { db } from '@/db/db'
-import { emails as emailsApi } from '@/lib/api'
+import { accounts as accountsApi, emails as emailsApi, type MailFolderInfo } from '@/lib/api'
 import { buildIndex, addToIndex } from '@/lib/search'
 import { useLabelsStore } from '@/store/labelsStore'
 import { useUiStore } from '@/store/uiStore'
@@ -39,6 +39,8 @@ function defaultAccountState(): AccountViewState {
 // Pull a deep batch on first sync of a folder, smaller delta after.
 const FIRST_SYNC_LIMIT = 500
 const DELTA_SYNC_LIMIT = 100
+const PRELOAD_PAGE_SIZE = 250
+const SYSTEM_PRELOAD_FOLDERS = ['INBOX', 'Sent', 'Drafts', 'Trash', 'Spam', 'Starred'] as const
 
 function folderKey(f: ActiveFolder): string {
   if (typeof f === 'object') return `label:${f.id}`
@@ -51,7 +53,8 @@ interface EmailStore {
   accounts:        Account[]
   activeAccountId: string | null
   accountStates:   Record<string, AccountViewState>
-  syncProgress:    number | null
+	  syncProgress:    number | null
+	  syncStatus:      string | null
 
   // Account management
   setAccounts:      (accounts: Account[]) => void
@@ -86,8 +89,9 @@ interface EmailStore {
   muteThread:   (id?: string) => Promise<void>
   snoozeEmail:  (id: string, until: number) => Promise<void>
   undoLast:     () => Promise<void>
-  triggerSync:  () => Promise<void>
-  processLocalWorkflow: () => Promise<void>
+	  triggerSync:  () => Promise<void>
+	  preloadAllMail: (accountId?: string, mode?: 'auto' | 'full' | 'delta') => Promise<void>
+	  processLocalWorkflow: () => Promise<void>
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -108,13 +112,126 @@ function patchAS(
   return { ...s.accountStates, [id]: { ...prev, ...patch } }
 }
 
+async function loadLocalEmails(accountId: string, activeFolder: ActiveFolder): Promise<Email[]> {
+  // Dexie 3.x can miss boolean compound keys in some browsers, so flag-heavy
+  // folders intentionally query by accountId/folder and filter in JS. Keeping
+  // this in one helper prevents the inbox/list and preload refresh paths from
+  // drifting apart again.
+  if (activeFolder === 'INBOX') {
+    return db.emails
+      .where('accountId').equals(accountId)
+      .filter(e => e.folder === 'INBOX' && !e.isArchived && !e.isTrashed && !e.isSpam)
+      .reverse().sortBy('date')
+  }
+  if (activeFolder === 'Starred') {
+    return db.emails
+      .where('accountId').equals(accountId)
+      .filter(e => !!e.isStarred && !e.isTrashed && !e.isSpam)
+      .reverse().sortBy('date')
+  }
+  if (activeFolder === 'Drafts') {
+    return db.emails
+      .where('accountId').equals(accountId)
+      .filter(e => (!!e.isDraft || folderLooksLike(e.folder, 'draft')) && !e.isTrashed)
+      .reverse().sortBy('date')
+  }
+  if (activeFolder === 'Trash') {
+    return db.emails
+      .where('accountId').equals(accountId)
+      .filter(e => !!e.isTrashed || folderLooksLike(e.folder, 'trash') || folderLooksLike(e.folder, 'deleted'))
+      .reverse().sortBy('date')
+  }
+  if (activeFolder === 'Spam') {
+    return db.emails
+      .where('accountId').equals(accountId)
+      .filter(e => !!e.isSpam || folderLooksLike(e.folder, 'spam') || folderLooksLike(e.folder, 'junk'))
+      .reverse().sortBy('date')
+  }
+  if (activeFolder === 'snoozed') {
+    return db.emails
+      .where('accountId').equals(accountId)
+      .filter(e => (e.snoozedUntil ?? 0) > 0)
+      .reverse().sortBy('date')
+  }
+  if (typeof activeFolder === 'object' && activeFolder.kind === 'label') {
+    const labelId = activeFolder.id
+    return db.emails
+      .where('accountId').equals(accountId)
+      .filter(e => e.labels.includes(labelId) && !e.isTrashed && !e.isSpam)
+      .reverse().sortBy('date')
+  }
+  return db.emails
+    .where('[accountId+folder]').equals([accountId, activeFolder as string])
+    .reverse().sortBy('date')
+}
+
+function folderLooksLike(folder: string, token: string) {
+  return folder.toLowerCase().includes(token)
+}
+
+async function mergeServerEmails(serverEmails: Email[]): Promise<Email[]> {
+  const ids = serverEmails.map(e => e.id)
+  const localRows = await db.emails.bulkGet(ids)
+  const localById = new Map<string, Email>()
+  localRows.forEach(r => { if (r) localById.set(r.id, r) })
+  return serverEmails.map(raw => {
+    const prior = localById.get(raw.id)
+    if (!prior) return raw
+    return {
+      ...raw,
+      labels: Array.from(new Set([...(raw.labels ?? []), ...(prior.labels ?? [])])),
+      isArchived: prior.isArchived || raw.isArchived,
+      isTrashed: prior.isTrashed || raw.isTrashed,
+      isSpam: prior.isSpam || raw.isSpam,
+      isMuted: prior.isMuted || raw.isMuted,
+      snoozedUntil: prior.snoozedUntil ?? raw.snoozedUntil,
+      isRead: raw.isRead || prior.isRead,
+    }
+  })
+}
+
+async function resolvePreloadFolders(accountId: string): Promise<MailFolderInfo[]> {
+  let remote: MailFolderInfo[] = []
+  try {
+    remote = (await accountsApi.folders(accountId)).folders
+  } catch (err) {
+    console.error('[preload] folder discovery failed, falling back to system folders', err)
+  }
+
+  const byName = new Map<string, MailFolderInfo>()
+  for (const name of SYSTEM_PRELOAD_FOLDERS) {
+    byName.set(name.toLowerCase(), { name, path: name })
+  }
+  for (const folder of remote) {
+    const normalized = normalizePreloadFolder(folder)
+    if (!normalized) continue
+    if (normalized.name.toLowerCase() === 'all mail') continue
+    byName.set(normalized.name.toLowerCase(), normalized)
+  }
+  return [...byName.values()]
+}
+
+function normalizePreloadFolder(folder: MailFolderInfo): MailFolderInfo | null {
+  const name = folder.name || folder.path
+  const lower = name.toLowerCase()
+  if (!name || lower.includes('[gmail]') && lower.endsWith('/all mail')) return null
+  if (folder.role === 'inbox') return { ...folder, name: 'INBOX' }
+  if (folder.role === 'sent') return { ...folder, name: 'Sent' }
+  if (folder.role === 'drafts') return { ...folder, name: 'Drafts' }
+  if (folder.role === 'trash') return { ...folder, name: 'Trash' }
+  if (folder.role === 'spam') return { ...folder, name: 'Spam' }
+  if (folder.role === 'starred') return { ...folder, name: 'Starred' }
+  return { ...folder, name }
+}
+
 // ─── Store ────────────────────────────────────────────────────────────────────
 
 export const useEmailStore = create<EmailStore>((set, get) => ({
   accounts:        [],
   activeAccountId: null,
   accountStates:   {},
-  syncProgress:    null,
+	  syncProgress:    null,
+	  syncStatus:      null,
 
   // ─── Account management ──────────────────────────────────────────────────
 
@@ -181,7 +298,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     get().loadEmails()
   },
 
-  loadEmails: async () => {
+	  loadEmails: async () => {
     const account = get().getActiveAccount()
     if (!account) return
 
@@ -194,52 +311,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       const aid = account.id
       await get().processLocalWorkflow()
 
-      // NOTE: Dexie 3.x doesn't reliably match booleans through compound
-      // indexes (queries like `.equals([aid, 1])` won't match stored
-      // `true`/`false`). All flag-based queries fall back to an
-      // accountId index + JS filter, which is fast enough at our scale
-      // (typically <2k rows per account) and never silently misses.
-      if (activeFolder === 'INBOX') {
-        local = await db.emails
-          .where('[accountId+folder]').equals([aid, 'INBOX'])
-          .filter(e => !e.isArchived && !e.isTrashed && !e.isSpam)
-          .reverse().sortBy('date')
-      } else if (activeFolder === 'Starred') {
-        local = await db.emails
-          .where('accountId').equals(aid)
-          .filter(e => !!e.isStarred && !e.isTrashed && !e.isSpam)
-          .reverse().sortBy('date')
-      } else if (activeFolder === 'Drafts') {
-        local = await db.emails
-          .where('accountId').equals(aid)
-          .filter(e => (!!e.isDraft || e.folder.toLowerCase().includes('draft')) && !e.isTrashed)
-          .reverse().sortBy('date')
-      } else if (activeFolder === 'Trash') {
-        local = await db.emails
-          .where('accountId').equals(aid)
-          .filter(e => !!e.isTrashed || e.folder.toLowerCase().includes('trash'))
-          .reverse().sortBy('date')
-      } else if (activeFolder === 'Spam') {
-        local = await db.emails
-          .where('accountId').equals(aid)
-          .filter(e => !!e.isSpam || e.folder.toLowerCase().includes('spam'))
-          .reverse().sortBy('date')
-      } else if (activeFolder === 'snoozed') {
-        local = await db.emails
-          .where('accountId').equals(aid)
-          .filter(e => (e.snoozedUntil ?? 0) > 0)
-          .reverse().sortBy('date')
-      } else if (typeof activeFolder === 'object' && activeFolder.kind === 'label') {
-        const labelId = activeFolder.id
-        local = await db.emails
-          .where('accountId').equals(aid)
-          .filter(e => e.labels.includes(labelId) && !e.isTrashed && !e.isSpam)
-          .reverse().sortBy('date')
-      } else {
-        local = await db.emails
-          .where('[accountId+folder]').equals([aid, activeFolder as string])
-          .reverse().sortBy('date')
-      }
+	      local = await loadLocalEmails(aid, activeFolder)
 
       set(s => ({ accountStates: patchAS(s, { emails: local, isLoading: false }) }))
       buildIndex(local)
@@ -374,6 +446,105 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     } catch (err) {
       console.error('[sync] failed', err)
       set(s => ({ accountStates: patchAS(s, { isSyncing: false }) }))
+    }
+  },
+
+  preloadAllMail: async (targetAccountId, mode = 'auto') => {
+    const account = targetAccountId
+      ? get().accounts.find(a => a.id === targetAccountId)
+      : get().getActiveAccount()
+    if (!account) return
+
+    const metaKey = `${account.id}:preload`
+    const meta = await db.syncMeta.get(metaKey)
+    const hasLocalMail = await db.emails.where('accountId').equals(account.id).count()
+    const resolvedMode = mode === 'auto'
+      ? (meta?.status === 'ready' || hasLocalMail > 0 ? 'delta' : 'full')
+      : mode
+
+    set({ syncProgress: 1, syncStatus: resolvedMode === 'full' ? 'Preparing mailbox preload…' : 'Checking for new mail…' })
+    await db.syncMeta.put({
+      key: metaKey,
+      accountId: account.id,
+      status: 'preloading',
+      totalFetched: meta?.totalFetched ?? 0,
+      updatedAt: Date.now(),
+    })
+
+    try {
+      const folderInfo = await resolvePreloadFolders(account.id)
+      const folders = folderInfo.map(f => f.name)
+      const tag = useLabelsStore.getState().tagEmail
+      let totalFetched = 0
+
+      for (let i = 0; i < folders.length; i++) {
+        const folder = folders[i]
+        const maxPages = resolvedMode === 'delta' ? 1 : Number.POSITIVE_INFINITY
+        let offset = 0
+        let page = 0
+        let keepGoing = true
+
+        while (keepGoing && page < maxPages) {
+          set({
+            syncStatus: `${resolvedMode === 'full' ? 'Preloading' : 'Syncing'} ${folder}…`,
+            syncProgress: Math.max(2, Math.round(((i + Math.min(page, 1) / 2) / folders.length) * 100)),
+          })
+
+          const batch = await emailsApi.list(account.id, folder, PRELOAD_PAGE_SIZE, offset)
+          if (batch.length === 0) break
+
+          const merged = await mergeServerEmails(batch.map(tag))
+          await db.emails.bulkPut(merged)
+          await upsertContactsFromEmails(merged)
+          merged.forEach(addToIndex)
+          totalFetched += merged.length
+
+          offset += PRELOAD_PAGE_SIZE
+          page += 1
+          keepGoing = batch.length === PRELOAD_PAGE_SIZE
+        }
+
+        await db.syncMeta.put({
+          key: `${account.id}:${folder}`,
+          accountId: account.id,
+          folder,
+          status: 'ready',
+          totalFetched: offset,
+          cursor: offset,
+          updatedAt: Date.now(),
+        })
+      }
+
+      await db.syncMeta.put({
+        key: metaKey,
+        accountId: account.id,
+        status: 'ready',
+        totalFetched: (meta?.totalFetched ?? 0) + totalFetched,
+        updatedAt: Date.now(),
+      })
+
+      set({ syncProgress: 100, syncStatus: resolvedMode === 'full' ? 'Mailbox preload complete' : 'Mailbox sync complete' })
+      if (get().activeAccountId === account.id) {
+        const state = getAS(get())
+        const local = await loadLocalEmails(account.id, state.activeFolder)
+        set(s => ({ accountStates: patchAS(s, { emails: local, isLoading: false, isSyncing: false }) }))
+      }
+      window.setTimeout(() => {
+        if (get().syncProgress === 100) set({ syncProgress: null, syncStatus: null })
+      }, 2000)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      await db.syncMeta.put({
+        key: metaKey,
+        accountId: account.id,
+        status: 'error',
+        totalFetched: meta?.totalFetched ?? 0,
+        updatedAt: Date.now(),
+        error: message,
+      })
+      set({ syncProgress: null, syncStatus: `Preload failed: ${message}` })
+      useUiStore.getState().toast('Mailbox preload failed')
+      console.error(err)
     }
   },
 

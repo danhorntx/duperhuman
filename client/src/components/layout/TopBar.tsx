@@ -5,8 +5,11 @@ import { useLabelsStore } from '@/store/labelsStore'
 import { formatShortcut } from '@/lib/utils'
 
 export function TopBar() {
-  const { activeFolder, isLoading } = useEmailStore(selectActiveState)
-  const triggerSync = useEmailStore(s => s.triggerSync)
+	  const { activeFolder, isLoading } = useEmailStore(selectActiveState)
+	  const triggerSync = useEmailStore(s => s.triggerSync)
+	  const preloadAllMail = useEmailStore(s => s.preloadAllMail)
+	  const syncProgress = useEmailStore(s => s.syncProgress)
+	  const syncStatus = useEmailStore(s => s.syncStatus)
   const openCommandPalette = useUiStore(s => s.openCommandPalette)
   const openShortcuts = useUiStore(s => s.openShortcuts)
   const labels = useLabelsStore(s => s.labels)
@@ -41,13 +44,27 @@ export function TopBar() {
         </span>
       </button>
 
-      <div className="flex items-center gap-1 ml-auto">
+	      {syncProgress != null && (
+	        <div className="hidden md:flex items-center gap-2 min-w-[180px] max-w-[260px]" data-no-drag="true">
+	          <div className="flex-1 h-1 rounded-full overflow-hidden" style={{ background: 'var(--bg-overlay)' }}>
+	            <div
+	              className="h-full rounded-full transition-all"
+	              style={{ width: `${syncProgress}%`, background: 'var(--accent)' }}
+	            />
+	          </div>
+	          <span className="text-[11px] text-[var(--text-muted)] truncate" title={syncStatus ?? undefined}>
+	            {syncStatus ?? `${syncProgress}%`}
+	          </span>
+	        </div>
+	      )}
+
+	      <div className="flex items-center gap-1 ml-auto">
         {/* Sync button */}
         <button
           onClick={() => triggerSync()}
           className="p-1.5 rounded-lg transition-colors duration-100 hover:bg-[var(--bg-hover)]"
           style={{ color: 'var(--text-muted)' }}
-          title="Sync now"
+	          title="Sync now"
           aria-label="Sync now"
         >
           <ArrowClockwiseIcon
@@ -55,7 +72,16 @@ export function TopBar() {
             weight="regular"
             className={isLoading ? 'animate-spin' : ''}
           />
-        </button>
+	        </button>
+	        <button
+	          onClick={() => preloadAllMail(undefined, 'full')}
+	          className="px-2 py-1.5 rounded-lg transition-colors duration-100 hover:bg-[var(--bg-hover)] text-[11px]"
+	          style={{ color: 'var(--text-muted)' }}
+	          title="Preload all mailboxes"
+	          aria-label="Preload all mailboxes"
+	        >
+	          Preload
+	        </button>
 
         {/* Shortcuts */}
         <button

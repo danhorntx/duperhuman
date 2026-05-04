@@ -1,5 +1,11 @@
 import type { Email, SendEmailPayload, Account } from '@/types/email'
 
+export interface MailFolderInfo {
+  name: string
+  path: string
+  role?: 'inbox' | 'sent' | 'drafts' | 'trash' | 'spam' | 'starred' | 'archive'
+}
+
 // Dev: Vite proxies /api → :3001 (relative URLs work).
 // Prod (packaged Electron): renderer is served from app://duperhuman/, so we
 // must hit the embedded Fastify server on http://127.0.0.1:3001 explicitly.
@@ -69,6 +75,9 @@ export const accounts = {
     }),
   delete: (id: string) =>
     request<void>(`/accounts/${id}`, { method: 'DELETE' }),
+
+  folders: (id: string) =>
+    request<{ folders: MailFolderInfo[] }>(`/accounts/${encodeURIComponent(id)}/folders`),
 }
 
 // ─── Emails ───────────────────────────────────────────────────────────────────

@@ -73,7 +73,8 @@ html, body, #root {
 button, input, a, select, textarea,
 [contenteditable], [role="button"],
 [role="listbox"], [role="option"],
-.email-list-pane, .email-thread-pane {
+.email-list-pane, .email-thread-pane,
+[data-no-drag="true"] {
   -webkit-app-region: no-drag;
 }
 
@@ -127,6 +128,7 @@ button, input, a, select, textarea,
 .main-area {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   display: flex;
   overflow: hidden;
@@ -136,6 +138,7 @@ button, input, a, select, textarea,
   width: var(--pane-split);
   min-width: 280px;
   max-width: 560px;
+  min-height: 0;
   height: 100%;
   border-right: 1px solid var(--border-subtle);
   display: flex;
@@ -146,6 +149,7 @@ button, input, a, select, textarea,
 .email-thread-pane {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   height: 100%;
   display: flex;
   flex-direction: column;

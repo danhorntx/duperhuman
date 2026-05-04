@@ -1,4 +1,4 @@
-import { useRef, useState, useCallback, useEffect } from 'react'
+import { useRef, useState, useCallback, useEffect, useMemo } from 'react'
 
 interface VirtualListOptions {
   count: number
@@ -18,30 +18,52 @@ interface VirtualItem {
  * (Superhuman's rows are uniform 56px), making this trivially fast.
  */
 export function useVirtualList({ count, itemHeight, overscan = 5 }: VirtualListOptions) {
-  const scrollRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
-  const [containerHeight, setContainerHeight] = useState(600)
+  const [containerHeight, setContainerHeight] = useState(0)
 
-  const onScroll = useCallback(() => {
-    if (scrollRef.current) setScrollTop(scrollRef.current.scrollTop)
+  const measure = useCallback(() => {
+    const el = scrollRef.current
+    if (!el) return
+    setContainerHeight(el.clientHeight)
+    setScrollTop(el.scrollTop)
+  }, [])
+
+  const setScrollRef = useCallback((node: HTMLDivElement | null) => {
+    scrollRef.current = node
+    if (node) {
+      setContainerHeight(node.clientHeight)
+      setScrollTop(node.scrollTop)
+    }
   }, [])
 
   useEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [onScroll])
-
-  useEffect(() => {
-    const el = scrollRef.current
-    if (!el) return
+    const onScroll = () => setScrollTop(el.scrollTop)
     const ro = new ResizeObserver(([entry]) => {
       setContainerHeight(entry.contentRect.height)
+      setScrollTop(el.scrollTop)
     })
     ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
+    el.addEventListener('scroll', onScroll, { passive: true })
+    window.addEventListener('resize', measure)
+    requestAnimationFrame(measure)
+    return () => {
+      ro.disconnect()
+      el.removeEventListener('scroll', onScroll)
+      window.removeEventListener('resize', measure)
+    }
+  }, [count, measure])
+
+  useEffect(() => {
+    const maxScrollTop = Math.max(0, count * itemHeight - containerHeight)
+    if (scrollTop > maxScrollTop) {
+      const el = scrollRef.current
+      if (el) el.scrollTop = maxScrollTop
+      setScrollTop(maxScrollTop)
+    }
+  }, [containerHeight, count, itemHeight, scrollTop])
 
   const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan)
   const endIndex = Math.min(
@@ -49,10 +71,13 @@ export function useVirtualList({ count, itemHeight, overscan = 5 }: VirtualListO
     Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
   )
 
-  const virtualItems: VirtualItem[] = []
-  for (let i = startIndex; i <= endIndex; i++) {
-    virtualItems.push({ index: i, start: i * itemHeight, size: itemHeight })
-  }
+  const virtualItems: VirtualItem[] = useMemo(() => {
+    const items: VirtualItem[] = []
+    for (let i = startIndex; i <= endIndex; i++) {
+      items.push({ index: i, start: i * itemHeight, size: itemHeight })
+    }
+    return items
+  }, [endIndex, itemHeight, startIndex])
 
   const totalSize = count * itemHeight
 
@@ -69,5 +94,5 @@ export function useVirtualList({ count, itemHeight, overscan = 5 }: VirtualListO
     }
   }, [itemHeight])
 
-  return { scrollRef, virtualItems, totalSize, scrollToIndex }
+  return { scrollRef: setScrollRef, virtualItems, totalSize, scrollToIndex }
 }

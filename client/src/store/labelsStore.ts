@@ -13,6 +13,7 @@ interface LabelsStore {
   update:    (id: string, patch: Partial<Omit<CustomLabel, 'id' | 'createdAt'>>) => Promise<void>
   remove:    (id: string) => Promise<void>
   rename:    (id: string, name: string) => Promise<void>
+  move:      (id: string, direction: 'up' | 'down') => Promise<void>
 
   // Re-run rules on the entire local cache (with progress callback)
   applyRulesBulk: (labelId?: string, onProgress?: (pct: number) => void) => Promise<number>
@@ -27,8 +28,8 @@ export const useLabelsStore = create<LabelsStore>((set, get) => ({
 
   load: async () => {
     set({ isLoading: true })
-    const labels = await db.labels.orderBy('updatedAt').reverse().toArray()
-    set({ labels, isLoading: false })
+	    const labels = await db.labels.toArray()
+	    set({ labels: sortLabels(labels), isLoading: false })
   },
 
   create: async (input) => {
@@ -37,10 +38,11 @@ export const useLabelsStore = create<LabelsStore>((set, get) => ({
       ...input,
       id:        generateId(),
       createdAt: now,
-      updatedAt: now,
+	      updatedAt: now,
+	      position:  now,
     }
     await db.labels.put(label)
-    set(s => ({ labels: [label, ...s.labels] }))
+	    set(s => ({ labels: sortLabels([label, ...s.labels]) }))
     return label
   },
 
@@ -48,7 +50,7 @@ export const useLabelsStore = create<LabelsStore>((set, get) => ({
     const updatedAt = Date.now()
     await db.labels.update(id, { ...patch, updatedAt })
     set(s => ({
-      labels: s.labels.map(l => (l.id === id ? { ...l, ...patch, updatedAt } : l)),
+	      labels: sortLabels(s.labels.map(l => (l.id === id ? { ...l, ...patch, updatedAt } : l))),
     }))
   },
 
@@ -64,9 +66,22 @@ export const useLabelsStore = create<LabelsStore>((set, get) => ({
     set(s => ({ labels: s.labels.filter(l => l.id !== id) }))
   },
 
-  rename: async (id, name) => {
-    return get().update(id, { name })
-  },
+	  rename: async (id, name) => {
+	    return get().update(id, { name })
+	  },
+
+	  move: async (id, direction) => {
+	    const labels = sortLabels(get().labels)
+	    const index = labels.findIndex(l => l.id === id)
+	    const swapWith = direction === 'up' ? index - 1 : index + 1
+	    if (index < 0 || swapWith < 0 || swapWith >= labels.length) return
+	    const next = [...labels]
+	    ;[next[index], next[swapWith]] = [next[swapWith], next[index]]
+	    const now = Date.now()
+	    const updates = next.map((label, pos) => ({ ...label, position: pos, updatedAt: now + pos }))
+	    await db.labels.bulkPut(updates)
+	    set({ labels: updates })
+	  },
 
   applyRulesBulk: async (labelId, onProgress) => {
     const labelsAll = get().labels
@@ -111,6 +126,14 @@ export const useLabelsStore = create<LabelsStore>((set, get) => ({
     return { ...email, labels: merged }
   },
 }))
+
+function sortLabels(labels: CustomLabel[]) {
+  return [...labels].sort((a, b) => {
+    const ap = a.position ?? a.updatedAt
+    const bp = b.position ?? b.updatedAt
+    return ap - bp
+  })
+}
 
 // ─── Helpers exposed for callers ──────────────────────────────────────────────
 

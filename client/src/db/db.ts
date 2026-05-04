@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { Email, EmailThread, Account, Draft, CustomLabel, Snippet, OutboxEmail, FollowUpReminder, Contact } from '@/types/email'
+import type { Email, EmailThread, Account, Draft, CustomLabel, Snippet, OutboxEmail, FollowUpReminder, Contact, SyncMeta } from '@/types/email'
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 // Local-first cache. The IMAP server is the source of truth; this DB is the
@@ -15,6 +15,7 @@ class SuperhumanDB extends Dexie {
   outbox!: Table<OutboxEmail>
   followUps!: Table<FollowUpReminder>
   contacts!: Table<Contact>
+  syncMeta!: Table<SyncMeta>
 
   constructor() {
     super('superhuman')
@@ -75,6 +76,11 @@ class SuperhumanDB extends Dexie {
       outbox: 'id, accountId, sendAt, status, createdAt',
       followUps: 'id, emailId, accountId, dueAt, completedAt',
       contacts: '[accountId+address], accountId, address, last, count',
+    })
+
+    // v5 — preload/incremental sync metadata
+    this.version(5).stores({
+      syncMeta: 'key, accountId, folder, status, updatedAt',
     })
   }
 }
