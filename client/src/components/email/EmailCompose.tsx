@@ -4,16 +4,28 @@ import {
   XIcon, PaperPlaneRightIcon, PaperclipIcon, TrashIcon,
   ClockIcon, ArrowsOutIcon, ArrowsInIcon, UserIcon,
 } from '@phosphor-icons/react'
+import DOMPurify from 'dompurify'
 import { useUiStore } from '@/store/uiStore'
 import { useEmailStore, selectSelectedEmail } from '@/store/emailStore'
-import { emails as emailsApi } from '@/lib/api'
 import { SnippetPicker } from '@/components/snippets/SnippetPicker'
 import { getContacts, filterContacts, type RankedContact } from '@/lib/contacts'
+import { queueEmail, processOutbox } from '@/lib/outbox'
+import { db } from '@/db/db'
 import type { Snippet } from '@/types/email'
 
 // `;` opens the snippet picker. Tracked at module scope per ComposeWindow
 // instance via React state below.
 const SNIPPET_TRIGGER = ';'
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+    .replace(/\n/g, '<br/>')
+}
 
 interface Recipient { name: string; address: string; raw: string }
 
@@ -218,7 +230,8 @@ export function ComposeWindow() {
   const toFieldRef = useRef<RecipientFieldHandle>(null)
   const [sending, setSending] = useState(false)
   const [undoSendTimer, setUndoSendTimer] = useState<number | null>(null)
-  const [undoCancelled, setUndoCancelled] = useState(false)
+  const undoCancelledRef = useRef(false)
+  const [scheduledAt, setScheduledAt] = useState<number | null>(null)
 
   // ─ Snippet picker state ───────────────────────────────────────────────────
   // We remember (a) where in the DOM the trigger `;` was inserted so we can
@@ -235,25 +248,52 @@ export function ComposeWindow() {
   // Pre-fill for replies/forwards/new
   useEffect(() => {
     if (!composeOpen) return
-    if (composeReplyToId && replyToEmail) {
-      setTo([{ name: replyToEmail.from.name, address: replyToEmail.from.address, raw: replyToEmail.from.address }])
-      setSubject(replyToEmail.subject.startsWith('Re:') ? replyToEmail.subject : `Re: ${replyToEmail.subject}`)
-      if (bodyRef.current) {
-        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)">${replyToEmail.bodyHtml || replyToEmail.bodyText}</blockquote>`
-      }
-    } else if (composeForwardId && replyToEmail) {
-      setTo([])
-      setSubject(replyToEmail.subject.startsWith('Fwd:') ? replyToEmail.subject : `Fwd: ${replyToEmail.subject}`)
-      if (bodyRef.current) {
-        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)"><strong>Forwarded message:</strong><br/>${replyToEmail.bodyHtml || replyToEmail.bodyText}</blockquote>`
-      }
-    } else {
-      setTo([])
-      setCc([])
-      setSubject('')
-      if (bodyRef.current) bodyRef.current.innerHTML = ''
-    }
-  }, [composeOpen, composeReplyToId, composeForwardId, replyToEmail])
+	    if (composeReplyToId && replyToEmail) {
+	      setTo([{ name: replyToEmail.from.name, address: replyToEmail.from.address, raw: replyToEmail.from.address }])
+	      setSubject(replyToEmail.subject.startsWith('Re:') ? replyToEmail.subject : `Re: ${replyToEmail.subject}`)
+	      if (bodyRef.current) {
+	        const quoted = DOMPurify.sanitize(replyToEmail.bodyHtml || escapeHtml(replyToEmail.bodyText))
+	        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)">${quoted}</blockquote>`
+	      }
+	    } else if (composeForwardId && replyToEmail) {
+	      setTo([])
+	      setSubject(replyToEmail.subject.startsWith('Fwd:') ? replyToEmail.subject : `Fwd: ${replyToEmail.subject}`)
+	      if (bodyRef.current) {
+	        const quoted = DOMPurify.sanitize(replyToEmail.bodyHtml || escapeHtml(replyToEmail.bodyText))
+	        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)"><strong>Forwarded message:</strong><br/>${quoted}</blockquote>`
+	      }
+	    } else {
+	      setTo([])
+	      setCc([])
+	      setSubject('')
+	      if (bodyRef.current) bodyRef.current.innerHTML = ''
+	    }
+	    setScheduledAt(null)
+	  }, [composeOpen, composeReplyToId, composeForwardId, replyToEmail])
+
+  useEffect(() => {
+    if (!composeOpen || !activeAccount) return
+    const draftId = composeReplyToId ?? composeForwardId ?? 'new'
+    const timer = window.setInterval(async () => {
+      const bodyHtml = bodyRef.current?.innerHTML ?? ''
+      if (to.length === 0 && cc.length === 0 && !subject.trim() && !bodyHtml.trim()) return
+      await db.drafts.put({
+        id: `${activeAccount.id}:${draftId}`,
+        accountId: activeAccount.id,
+        replyToId: composeReplyToId ?? undefined,
+        forwardOfId: composeForwardId ?? undefined,
+        to: to.map(r => ({ name: r.name, address: r.address })),
+        cc: cc.map(r => ({ name: r.name, address: r.address })),
+        bcc: [],
+        subject,
+        bodyHtml,
+        attachments: [],
+        savedAt: Date.now(),
+        scheduledSendAt: scheduledAt ?? undefined,
+      })
+    }, 2500)
+    return () => window.clearInterval(timer)
+  }, [composeOpen, activeAccount, composeReplyToId, composeForwardId, to, cc, subject, scheduledAt])
 
   // Focus the right field after the open animation settles. New compose and
   // forward go to the To input; replies go to the body so the user can start
@@ -279,33 +319,42 @@ export function ComposeWindow() {
     return () => clearTimeout(t)
   }, [composeOpen, composeReplyToId, composeForwardId])
 
-  const sendEmail = async () => {
-    if (!activeAccount || to.length === 0) return
+	  const sendEmail = async () => {
+	    if (!activeAccount || to.length === 0) return
 
-    const bodyHtml = bodyRef.current?.innerHTML ?? ''
-    const bodyText = bodyRef.current?.innerText ?? ''
+	    const bodyHtml = bodyRef.current?.innerHTML ?? ''
+	    const bodyText = bodyRef.current?.innerText ?? ''
+	    const payload = {
+	      accountId: activeAccount.id,
+	      to: to.map(r => ({ name: r.name, address: r.address })),
+	      cc: cc.map(r => ({ name: r.name, address: r.address })),
+	      subject,
+	      bodyHtml: DOMPurify.sanitize(bodyHtml),
+	      bodyText,
+	      replyToId: composeReplyToId ?? undefined,
+	      forwardOfId: composeForwardId ?? undefined,
+	    }
 
-    toast('Sending in 5s…', {
-      action: { label: 'Undo', fn: () => { setUndoCancelled(true) } },
-      duration: 5500,
-    })
-    closeCompose()
+	    if (scheduledAt && scheduledAt > Date.now() + 5000) {
+	      await queueEmail(payload, scheduledAt)
+	      toast(`Scheduled for ${new Date(scheduledAt).toLocaleString()}`)
+	      closeCompose()
+	      return
+	    }
 
-    const timer = window.setTimeout(async () => {
-      if (undoCancelled) { setUndoCancelled(false); return }
-      setSending(true)
-      try {
-        await emailsApi.send({
-          accountId: activeAccount.id,
-          to: to.map(r => ({ name: r.name, address: r.address })),
-          cc: cc.map(r => ({ name: r.name, address: r.address })),
-          subject,
-          bodyHtml,
-          bodyText,
-          replyToId: composeReplyToId ?? undefined,
-          forwardOfId: composeForwardId ?? undefined,
-        })
-        toast('Sent')
+	    toast('Sending in 5s…', {
+	      action: { label: 'Undo', fn: () => { undoCancelledRef.current = true } },
+	      duration: 5500,
+	    })
+	    closeCompose()
+
+	    const timer = window.setTimeout(async () => {
+	      if (undoCancelledRef.current) { undoCancelledRef.current = false; return }
+	      setSending(true)
+	      try {
+	        await queueEmail(payload, Date.now())
+	        await processOutbox()
+	        toast('Sent')
       } catch (err) {
         toast('Failed to send — check your connection')
         console.error(err)
@@ -430,7 +479,7 @@ export function ComposeWindow() {
     // render correctly. We use a temporary container so we can place the
     // caret after the LAST inserted node.
     const tmp = document.createElement('div')
-    tmp.innerHTML = snippet.body
+	    tmp.innerHTML = DOMPurify.sanitize(snippet.body)
     const frag = document.createDocumentFragment()
     let lastNode: ChildNode | null = null
     while (tmp.firstChild) {
@@ -624,13 +673,20 @@ export function ComposeWindow() {
               </kbd>
             </button>
 
-            <button
-              className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
-              style={{ color: 'var(--text-muted)' }}
-              title="Schedule send"
-            >
-              <ClockIcon size={14} />
-            </button>
+	            <button
+	              onClick={() => {
+	                const next = scheduledAt
+	                  ? null
+	                  : Date.now() + 60 * 60_000
+	                setScheduledAt(next)
+	                if (next) toast('Send scheduled for 1 hour from now')
+	              }}
+	              className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
+	              style={{ color: scheduledAt ? 'var(--accent)' : 'var(--text-muted)' }}
+	              title={scheduledAt ? 'Scheduled send enabled' : 'Schedule send for 1 hour from now'}
+	            >
+	              <ClockIcon size={14} />
+	            </button>
 
             <button
               className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"

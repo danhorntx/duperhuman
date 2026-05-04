@@ -121,6 +121,42 @@ export interface Draft {
   scheduledSendAt?: number
 }
 
+export interface OutboxEmail {
+  id: string
+  accountId: string
+  to: EmailAddress[]
+  cc: EmailAddress[]
+  bcc: EmailAddress[]
+  subject: string
+  bodyHtml: string
+  bodyText: string
+  replyToId?: string
+  forwardOfId?: string
+  sendAt: number
+  createdAt: number
+  status: 'queued' | 'sending' | 'failed'
+  attempts: number
+  lastError?: string
+}
+
+export interface FollowUpReminder {
+  id: string
+  emailId: string
+  accountId: string
+  dueAt: number
+  note?: string
+  createdAt: number
+  completedAt?: number
+}
+
+export interface Contact {
+  address: string
+  accountId: string
+  name: string
+  count: number
+  last: number
+}
+
 // ─── Search ───────────────────────────────────────────────────────────────────
 
 export interface SearchResult {

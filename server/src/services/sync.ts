@@ -46,7 +46,6 @@ export interface StoredAccount extends ImapAccount {
 }
 
 const accountStore = new Map<string, StoredAccount>()
-const emailCache = new Map<string, ReturnType<typeof fetchEmails> extends Promise<infer T> ? T : never>()
 
 // ─── Cache: folder → emails ───────────────────────────────────────────────────
 // Key: `${accountId}:${folder}`
@@ -112,12 +111,25 @@ export async function syncFolder(
 }
 
 export function getCachedEmails(accountId: string, folder: string) {
-  return folderCache.get(`${accountId}:${folder}`)?.emails ?? []
+  const prefix = `${accountId}:${folder}:`
+  const rows = [...folderCache.entries()]
+    .filter(([key]) => key.startsWith(prefix))
+    .sort(([, a], [, b]) => b.fetchedAt - a.fetchedAt)
+    .flatMap(([, value]) => value.emails)
+  const seen = new Set<string>()
+  return rows.filter(e => {
+    if (seen.has(e.id)) return false
+    seen.add(e.id)
+    return true
+  })
 }
 
 export function invalidateCache(accountId: string, folder?: string) {
   if (folder) {
-    folderCache.delete(`${accountId}:${folder}`)
+    const prefix = `${accountId}:${folder}:`
+    for (const key of folderCache.keys()) {
+      if (key.startsWith(prefix)) folderCache.delete(key)
+    }
   } else {
     for (const key of folderCache.keys()) {
       if (key.startsWith(`${accountId}:`)) folderCache.delete(key)
@@ -128,16 +140,21 @@ export function invalidateCache(accountId: string, folder?: string) {
 // ─── Background polling ───────────────────────────────────────────────────────
 
 let pollingInterval: NodeJS.Timeout | null = null
+const backgroundInFlight = new Set<string>()
 
 export function startBackgroundSync(intervalMs = 30_000) {
   if (pollingInterval) return
   pollingInterval = setInterval(async () => {
     for (const account of accountStore.values()) {
       if (!account.isActive) continue
+      if (backgroundInFlight.has(account.id)) continue
       try {
+        backgroundInFlight.add(account.id)
         await syncFolder(account.id, 'INBOX', 50, 0, true)
       } catch (err) {
         console.error(`Background sync failed for ${account.id}:`, err)
+      } finally {
+        backgroundInFlight.delete(account.id)
       }
     }
   }, intervalMs)

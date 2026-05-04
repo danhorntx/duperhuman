@@ -3,7 +3,9 @@ import { db } from '@/db/db'
 import { emails as emailsApi } from '@/lib/api'
 import { buildIndex, addToIndex } from '@/lib/search'
 import { useLabelsStore } from '@/store/labelsStore'
-import { invalidateContactCache } from '@/lib/contacts'
+import { useUiStore } from '@/store/uiStore'
+import { invalidateContactCache, upsertContactsFromEmails } from '@/lib/contacts'
+import { resurfaceDueSnoozes } from '@/lib/localWorkflow'
 import type { Email, ActiveFolder, Account } from '@/types/email'
 
 // ─── Per-account view state ───────────────────────────────────────────────────
@@ -85,6 +87,7 @@ interface EmailStore {
   snoozeEmail:  (id: string, until: number) => Promise<void>
   undoLast:     () => Promise<void>
   triggerSync:  () => Promise<void>
+  processLocalWorkflow: () => Promise<void>
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -189,6 +192,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       // 1. Serve from IndexedDB first (instant)
       let local: Email[] = []
       const aid = account.id
+      await get().processLocalWorkflow()
 
       // NOTE: Dexie 3.x doesn't reliably match booleans through compound
       // indexes (queries like `.equals([aid, 1])` won't match stored
@@ -322,6 +326,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       })
 
       await db.emails.bulkPut(serverEmails)
+      await upsertContactsFromEmails(serverEmails)
       serverEmails.forEach(addToIndex)
       invalidateContactCache()
 
@@ -372,6 +377,21 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     }
   },
 
+  processLocalWorkflow: async () => {
+    const account = get().getActiveAccount()
+    if (!account) return
+    const surfaced = await resurfaceDueSnoozes(account.id)
+    if (surfaced.length === 0) return
+    const state = getAS(get())
+    if (state.activeFolder !== 'INBOX') return
+    const existing = new Set(state.emails.map(e => e.id))
+    const merged = [
+      ...surfaced.filter(e => !existing.has(e.id)),
+      ...state.emails,
+    ].filter(e => !e.isTrashed && !e.isSpam).sort((a, b) => b.date - a.date)
+    set(s => ({ accountStates: patchAS(s, { emails: merged }) }))
+  },
+
   loadMore: async () => {
     const account = get().getActiveAccount()
     if (!account) return 0
@@ -417,6 +437,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
         }
       })
       await db.emails.bulkPut(tagged)
+      await upsertContactsFromEmails(tagged)
       tagged.forEach(addToIndex)
 
       const nowState   = getAS(get())
@@ -543,7 +564,18 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     }) }))
 
     await db.emails.update(targetId!, { isArchived: true })
-    emailsApi.archive([targetId!]).catch(console.error)
+    try {
+      await emailsApi.archive([targetId!])
+    } catch (err) {
+      const current = getAS(get())
+      const restored = [{ ...target, isArchived: false }, ...current.emails].sort((a, b) => b.date - a.date)
+      const nextPending = new Map(getAS(get()).pendingArchive)
+      nextPending.delete(targetId!)
+      set(s => ({ accountStates: patchAS(s, { emails: restored, pendingArchive: nextPending }) }))
+      await db.emails.update(targetId!, { isArchived: false })
+      useUiStore.getState().toast('Archive failed — restored locally')
+      console.error(err)
+    }
   },
 
   deleteEmail: async (id) => {
@@ -565,7 +597,18 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     }) }))
 
     await db.emails.update(targetId!, { isTrashed: true })
-    emailsApi.trash([targetId!]).catch(console.error)
+    try {
+      await emailsApi.trash([targetId!])
+    } catch (err) {
+      const current = getAS(get())
+      const restored = [{ ...target, isTrashed: false }, ...current.emails].sort((a, b) => b.date - a.date)
+      const nextPending = new Map(getAS(get()).pendingDelete)
+      nextPending.delete(targetId!)
+      set(s => ({ accountStates: patchAS(s, { emails: restored, pendingDelete: nextPending }) }))
+      await db.emails.update(targetId!, { isTrashed: false })
+      useUiStore.getState().toast('Delete failed — restored locally')
+      console.error(err)
+    }
   },
 
   undoLast: async () => {
@@ -580,7 +623,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       const updated = [{ ...email, isArchived: false }, ...emails].sort((a, b) => b.date - a.date)
       set(s => ({ accountStates: patchAS(s, { emails: updated, pendingArchive: newPending }) }))
       await db.emails.update(id, { isArchived: false })
-      emailsApi.restore([id]).catch(console.error)
+      try { await emailsApi.restore([id]) } catch (err) { useUiStore.getState().toast('Undo failed on mail server'); console.error(err) }
     } else if (deleteEntry) {
       const [id, email] = deleteEntry
       const newPending  = new Map(pendingDelete)
@@ -588,7 +631,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       const updated = [{ ...email, isTrashed: false }, ...emails].sort((a, b) => b.date - a.date)
       set(s => ({ accountStates: patchAS(s, { emails: updated, pendingDelete: newPending }) }))
       await db.emails.update(id, { isTrashed: false })
-      emailsApi.restore([id]).catch(console.error)
+      try { await emailsApi.restore([id]) } catch (err) { useUiStore.getState().toast('Undo failed on mail server'); console.error(err) }
     }
   },
 
@@ -602,7 +645,16 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       emails: emails.map(e => e.id === targetId ? { ...e, isStarred: starred } : e),
     }) }))
     await db.emails.update(targetId!, { isStarred: starred })
-    emailsApi.star([targetId!], starred).catch(console.error)
+    try {
+      await emailsApi.star([targetId!], starred)
+    } catch (err) {
+      set(s => ({ accountStates: patchAS(s, {
+        emails: getAS(s).emails.map(e => e.id === targetId ? { ...e, isStarred: !starred } : e),
+      }) }))
+      await db.emails.update(targetId!, { isStarred: !starred })
+      useUiStore.getState().toast('Star update failed')
+      console.error(err)
+    }
   },
 
   markRead: async (id, read) => {
@@ -610,8 +662,20 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     set(s => ({ accountStates: patchAS(s, {
       emails: emails.map(e => e.id === id ? { ...e, isRead: read } : e),
     }) }))
+    const previous = emails.find(e => e.id === id)?.isRead
     await db.emails.update(id, { isRead: read })
-    emailsApi.markRead([id], read).catch(console.error)
+    try {
+      await emailsApi.markRead([id], read)
+    } catch (err) {
+      if (previous !== undefined) {
+        set(s => ({ accountStates: patchAS(s, {
+          emails: getAS(s).emails.map(e => e.id === id ? { ...e, isRead: previous } : e),
+        }) }))
+        await db.emails.update(id, { isRead: previous })
+      }
+      useUiStore.getState().toast('Read state update failed')
+      console.error(err)
+    }
   },
 
   markUnread: async (id) => {
@@ -631,8 +695,18 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       focusedIndex: newIndex,
       selectedId: updated[newIndex]?.id ?? null,
     }) }))
+    const target = emails.find(e => e.id === targetId)
     await db.emails.update(targetId, { isSpam: true })
-    emailsApi.spam([targetId]).catch(console.error)
+    try {
+      await emailsApi.spam([targetId])
+    } catch (err) {
+      if (target) {
+        set(s => ({ accountStates: patchAS(s, { emails: [{ ...target, isSpam: false }, ...getAS(s).emails].sort((a, b) => b.date - a.date) }) }))
+        await db.emails.update(targetId, { isSpam: false })
+      }
+      useUiStore.getState().toast('Spam move failed')
+      console.error(err)
+    }
   },
 
   muteThread: async (id) => {
@@ -648,7 +722,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       selectedId: updated[newIndex]?.id ?? null,
     }) }))
     await db.emails.where('threadId').equals(target.threadId).modify({ isMuted: true, isArchived: true })
-    emailsApi.mute(target.threadId).catch(console.error)
+    try { await emailsApi.mute(target.threadId) } catch (err) { useUiStore.getState().toast('Mute failed on mail server'); console.error(err) }
   },
 
   snoozeEmail: async (id, until) => {
@@ -660,8 +734,18 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
       focusedIndex: newIndex,
       selectedId: updated[newIndex]?.id ?? null,
     }) }))
+    const target = emails.find(e => e.id === id)
     await db.emails.update(id, { snoozedUntil: until, isArchived: true })
-    emailsApi.snooze([id], until).catch(console.error)
+    try {
+      await emailsApi.snooze([id], until)
+    } catch (err) {
+      if (target) {
+        set(s => ({ accountStates: patchAS(s, { emails: [{ ...target, snoozedUntil: undefined, isArchived: false }, ...getAS(s).emails].sort((a, b) => b.date - a.date) }) }))
+        await db.emails.update(id, { snoozedUntil: undefined, isArchived: false })
+      }
+      useUiStore.getState().toast('Snooze failed')
+      console.error(err)
+    }
   },
 }))
 

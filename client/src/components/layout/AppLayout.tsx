@@ -1,18 +1,19 @@
-import { useState, useEffect } from 'react'
+import { lazy, Suspense, useState, useEffect } from 'react'
 import { Sidebar }         from './Sidebar'
 import { TopBar }          from './TopBar'
 import { EmailList }       from '@/components/email/EmailList'
 import { EmailThread }     from '@/components/email/EmailThread'
-import { CommandPalette }  from '@/components/command/CommandPalette'
-import { ComposeWindow }   from '@/components/email/EmailCompose'
 import { ShortcutsOverlay } from '@/components/overlays/ShortcutsOverlay'
 import { SnoozeModal }     from '@/components/overlays/SnoozeModal'
 import { ToastStack }      from '@/components/ui/Toast'
 import { AddAccountModal } from '@/components/account/AddAccountModal'
-import { SearchView }      from '@/components/search/SearchView'
-import { LabelManager }    from '@/components/labels/LabelManager'
 import { LabelDialog }     from '@/components/labels/LabelDialog'
 import { useUiStore }      from '@/store/uiStore'
+
+const CommandPalette = lazy(() => import('@/components/command/CommandPalette').then(m => ({ default: m.CommandPalette })))
+const ComposeWindow = lazy(() => import('@/components/email/EmailCompose').then(m => ({ default: m.ComposeWindow })))
+const SearchView = lazy(() => import('@/components/search/SearchView').then(m => ({ default: m.SearchView })))
+const LabelManager = lazy(() => import('@/components/labels/LabelManager').then(m => ({ default: m.LabelManager })))
 
 export function AppLayout() {
   const [showAddAccount, setShowAddAccount] = useState(false)
@@ -48,14 +49,18 @@ export function AppLayout() {
               </div>
             </>
           )}
-          {view === 'search'        && <SearchView />}
-          {view === 'label-manager' && <LabelManager />}
+	          <Suspense fallback={null}>
+	            {view === 'search'        && <SearchView />}
+	            {view === 'label-manager' && <LabelManager />}
+	          </Suspense>
         </div>
       </div>
 
       {/* Global overlays */}
-      <CommandPalette />
-      <ComposeWindow />
+	      <Suspense fallback={null}>
+	        <CommandPalette />
+	        <ComposeWindow />
+	      </Suspense>
       <ShortcutsOverlay />
       <SnoozeModal />
       <LabelDialog />

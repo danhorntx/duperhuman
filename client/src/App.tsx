@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react'
 import { AppLayout }    from '@/components/layout/AppLayout'
 import { useGlobalKeyboard } from '@/hooks/useKeyboard'
 import { useEmailStore } from '@/store/emailStore'
+import { useUiStore } from '@/store/uiStore'
 import { accounts as accountsApi } from '@/lib/api'
+import { processOutbox } from '@/lib/outbox'
+import { dueFollowUps, completeFollowUp } from '@/lib/localWorkflow'
 import { db }           from '@/db/db'
 import type { Account } from '@/types/email'
 
@@ -158,6 +161,29 @@ function SetupScreen({ onSetup }: { onSetup: (account: Account, password: string
 
 function AppInner() {
   useGlobalKeyboard()
+  const processLocalWorkflow = useEmailStore(s => s.processLocalWorkflow)
+  const activeAccountId = useEmailStore(s => s.activeAccountId)
+  const toast = useUiStore(s => s.toast)
+
+  useEffect(() => {
+    const run = async () => {
+      await processOutbox()
+      await processLocalWorkflow()
+      if (activeAccountId) {
+        const due = await dueFollowUps(activeAccountId)
+        if (due.length > 0) {
+          // Mark reminders complete after surfacing them once. The email remains
+          // in local cache and can be found through search or labels.
+          await Promise.all(due.map(f => completeFollowUp(f.id)))
+          toast(`${due.length} follow-up${due.length === 1 ? '' : 's'} due`)
+        }
+      }
+    }
+    run()
+    const timer = window.setInterval(run, 30_000)
+    return () => window.clearInterval(timer)
+  }, [activeAccountId, processLocalWorkflow, toast])
+
   return <AppLayout />
 }
 
@@ -176,11 +202,12 @@ export default function App() {
           if (stored.length > 0) {
             // Re-register each account with the server (server is stateless)
             const registered: Account[] = []
-            for (const sa of stored) {
-              try {
-                const acc = await accountsApi.create(sa)
-                registered.push(acc)
-              } catch {
+	            for (const sa of stored) {
+	              try {
+	                const acc = await accountsApi.create(sa)
+	                registered.push(acc)
+	                await db.accounts.put(acc)
+	              } catch {
                 // If already registered (server kept it), try listing
               }
             }
@@ -190,7 +217,8 @@ export default function App() {
               : await accountsApi.list()
 
             if (serverAccounts.length > 0) {
-              setAccounts(serverAccounts)
+	          setAccounts(serverAccounts)
+	          await db.accounts.bulkPut(serverAccounts)
               await loadEmails()
               setHasAccount(true)
               setReady(true)
@@ -212,7 +240,7 @@ export default function App() {
         // ── 3. Fall back to local IndexedDB cache (offline) ───────────────
         const local = await db.accounts.toArray()
         if (local.length > 0) {
-          setAccounts(local)
+	      setAccounts(local)
           await loadEmails()
           setHasAccount(true)
         }
@@ -237,6 +265,7 @@ export default function App() {
     if (eAPI) {
       await eAPI.saveAccount({ ...account, password })
     }
+    await db.accounts.put(account)
     addAccount(account)
     setActiveAccount(account.id)
     await loadEmails()

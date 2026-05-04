@@ -2,6 +2,7 @@ import Imap from 'imap'
 import { simpleParser } from 'mailparser'
 import type { ParsedMail } from 'mailparser'
 import crypto from 'crypto'
+import { config } from '../lib/config.js'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -64,7 +65,7 @@ function getConnection(account: ImapAccount): Promise<Imap> {
       host: account.imapHost,
       port: account.imapPort,
       tls: account.imapTls,
-      tlsOptions: { rejectUnauthorized: false },
+      tlsOptions: { rejectUnauthorized: !config.allowInsecureTls },
       keepalive: { interval: 10000, idleInterval: 300000, forceNoop: true },
     })
 
@@ -87,6 +88,10 @@ function deriveThreadId(parsed: ParsedMail): string {
 }
 
 type MailAddr = import('mailparser').AddressObject | undefined
+type ImapWithLabels = Imap & {
+  addLabels: (uids: number[], labels: string[], cb: (err?: Error) => void) => void
+  delLabels: (uids: number[], labels: string[], cb: (err?: Error) => void) => void
+}
 
 function parseAddress(addr: MailAddr): { name: string; address: string }[] {
   if (!addr) return []
@@ -223,6 +228,26 @@ export async function addFlags(account: ImapAccount, folder: string, uids: numbe
     imap.openBox(folder, false, (err) => {
       if (err) return reject(err)
       imap.addFlags(uids, flags, e => e ? reject(e) : resolve())
+    })
+  })
+}
+
+export async function setLabels(account: ImapAccount, folder: string, uids: number[], labels: string[]): Promise<void> {
+  const imap = await getConnection(account)
+  return new Promise((resolve, reject) => {
+    imap.openBox(folder, false, (err) => {
+      if (err) return reject(err)
+      ;(imap as ImapWithLabels).addLabels(uids, labels, (e?: Error) => e ? reject(e) : resolve())
+    })
+  })
+}
+
+export async function removeLabels(account: ImapAccount, folder: string, uids: number[], labels: string[]): Promise<void> {
+  const imap = await getConnection(account)
+  return new Promise((resolve, reject) => {
+    imap.openBox(folder, false, (err) => {
+      if (err) return reject(err)
+      ;(imap as ImapWithLabels).delLabels(uids, labels, (e?: Error) => e ? reject(e) : resolve())
     })
   })
 }

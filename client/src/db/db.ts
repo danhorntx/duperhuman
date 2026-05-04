@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { Email, EmailThread, Account, Draft, CustomLabel, Snippet } from '@/types/email'
+import type { Email, EmailThread, Account, Draft, CustomLabel, Snippet, OutboxEmail, FollowUpReminder, Contact } from '@/types/email'
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 // Local-first cache. The IMAP server is the source of truth; this DB is the
@@ -12,6 +12,9 @@ class SuperhumanDB extends Dexie {
   drafts!: Table<Draft>
   labels!: Table<CustomLabel>
   snippets!: Table<Snippet>
+  outbox!: Table<OutboxEmail>
+  followUps!: Table<FollowUpReminder>
+  contacts!: Table<Contact>
 
   constructor() {
     super('superhuman')
@@ -65,6 +68,13 @@ class SuperhumanDB extends Dexie {
     // v3 — snippets for compose text expansion
     this.version(3).stores({
       snippets: 'id, shortcut, name, updatedAt',
+    })
+
+    // v4 — durable outbox, follow-up reminders, and incremental contacts
+    this.version(4).stores({
+      outbox: 'id, accountId, sendAt, status, createdAt',
+      followUps: 'id, emailId, accountId, dueAt, completedAt',
+      contacts: '[accountId+address], accountId, address, last, count',
     })
   }
 }

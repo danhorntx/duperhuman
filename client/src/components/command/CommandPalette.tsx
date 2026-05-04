@@ -12,6 +12,7 @@ import { useLabelsStore } from '@/store/labelsStore'
 import { localSearch } from '@/lib/search'
 import { parseQuery, getActiveOperator } from '@/lib/searchQuery'
 import { getContacts, filterContacts, type RankedContact } from '@/lib/contacts'
+import { createFollowUp } from '@/lib/localWorkflow'
 import { displayName, formatEmailDate } from '@/lib/utils'
 import type { Email } from '@/types/email'
 
@@ -29,10 +30,12 @@ interface Command {
 
 function useCommands(): Command[] {
   const store = useEmailStore()
-  const { selectedId } = useEmailStore(selectActiveState)
+  const { selectedId, emails } = useEmailStore(selectActiveState)
+  const accounts = useEmailStore(s => s.accounts)
   const ui = useUiStore()
+  const selectedEmail = emails.find(e => e.id === selectedId) ?? null
 
-  return [
+  const commands: Command[] = [
     { id: 'compose', label: 'Compose new email', icon: <EnvelopeIcon size={15} />, shortcut: 'C', category: 'compose', run: () => ui.openCompose() },
     { id: 'reply',     label: 'Reply',       icon: <ArrowBendUpLeftIcon size={15} />,       shortcut: 'R', category: 'compose', run: () => selectedId && ui.openCompose({ replyToId: selectedId }) },
     { id: 'reply-all', label: 'Reply all',   icon: <ArrowBendDoubleUpLeftIcon size={15} />, shortcut: 'A', category: 'compose', run: () => selectedId && ui.openCompose({ replyToId: selectedId }) },
@@ -42,10 +45,23 @@ function useCommands(): Command[] {
     { id: 'star',      label: 'Star / Unstar', icon: <StarIcon size={15} />,                shortcut: 'S', category: 'action',  run: () => store.starEmail() },
     { id: 'snooze',    label: 'Snooze',      icon: <ClockIcon size={15} />,                 shortcut: 'H', category: 'action',  run: () => ui.openSnoozeModal() },
     { id: 'mark-unread', label: 'Mark as unread', icon: <EnvelopeIcon size={15} />,         shortcut: 'Shift+U', category: 'action', run: () => store.markUnread() },
+    { id: 'follow-up-tomorrow', label: 'Remind me tomorrow', icon: <ClockIcon size={15} />, shortcut: '', category: 'action', run: () => { if (selectedEmail) createFollowUp(selectedEmail, Date.now() + 24 * 60 * 60_000).then(() => ui.toast('Follow-up set for tomorrow')) } },
     { id: 'go-inbox',  label: 'Go to Inbox',   icon: <TrayIcon size={15} />,                shortcut: 'G I', category: 'navigate', run: () => store.setActiveFolder('INBOX') },
     { id: 'go-starred',label: 'Go to Starred', icon: <StarIcon size={15} />,                shortcut: 'G S', category: 'navigate', run: () => store.setActiveFolder('Starred') },
     { id: 'go-sent',   label: 'Go to Sent',    icon: <PaperPlaneRightIcon size={15} />,     shortcut: 'G T', category: 'navigate', run: () => store.setActiveFolder('Sent') },
     { id: 'manage-labels', label: 'Manage labels & rules', icon: <TagIcon size={15} />,     shortcut: 'L', category: 'navigate', run: () => ui.openLabelManager() },
+  ]
+
+  return [
+    ...commands,
+    ...accounts.map(account => ({
+      id: `switch-account-${account.id}`,
+      label: `Switch to ${account.name || account.email}`,
+      sublabel: account.email,
+      icon: <UserIcon size={15} />,
+      category: 'navigate' as const,
+      run: () => store.setActiveAccount(account.id),
+    })),
   ]
 }
 
@@ -97,7 +113,7 @@ export function CommandPalette() {
   // Lazy-load contacts when first triggered
   useEffect(() => {
     if (!open) return
-    if (active?.operator === 'from' && contacts.length === 0) {
+    if ((active?.operator === 'from' || active?.operator === 'to') && contacts.length === 0) {
       getContacts(account?.id ?? null).then(setContacts)
     }
   }, [open, active, contacts.length, account?.id])
@@ -109,7 +125,7 @@ export function CommandPalette() {
   ]
 
   const operatorSuggestions =
-    active?.operator === 'from'
+    active?.operator === 'from' || active?.operator === 'to'
       ? filterContacts(contacts, active.partial).map(c => ({
           kind: 'contact' as const,
           display: c.name ? `${c.name} <${c.address}>` : c.address,
@@ -238,7 +254,9 @@ export function CommandPalette() {
   const parsed = parseQuery(query)
   const chips: { label: string; key: string }[] = []
   if (parsed.operators.from) chips.push({ label: `from: ${parsed.operators.from}`, key: 'from' })
-  if (parsed.operators.in)   chips.push({ label: `in: ${parsed.operators.in}`,     key: 'in' })
+  if (parsed.operators.to)   chips.push({ label: `to: ${parsed.operators.to}`, key: 'to' })
+  if (parsed.operators.in)   chips.push({ label: `in: ${parsed.operators.in}`, key: 'in' })
+  if (parsed.operators.has)  chips.push({ label: `has: ${parsed.operators.has}`, key: 'has' })
 
   return (
     <AnimatePresence>
@@ -319,7 +337,7 @@ export function CommandPalette() {
                   <div>
                     <div className="px-3 py-1.5">
                       <span className="text-label text-[var(--text-muted)]">
-                        {active?.operator === 'from' ? 'Contacts' : 'Mailboxes & Labels'}
+                        {active?.operator === 'from' || active?.operator === 'to' ? 'Contacts' : 'Mailboxes & Labels'}
                       </span>
                     </div>
                     {operatorSuggestions.map((s, i) => {

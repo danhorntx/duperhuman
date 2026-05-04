@@ -131,12 +131,18 @@ export function SearchView() {
         {/* Active filters as chips */}
         {(parsed.operators.from || parsed.operators.in || parsed.freeText) && (
           <div className="flex flex-wrap items-center gap-1.5 mt-3">
-            {parsed.operators.from && (
-              <FilterChip label={`from: ${parsed.operators.from}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'from'))} />
-            )}
-            {parsed.operators.in && (
-              <FilterChip label={`in: ${parsed.operators.in}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'in'))} />
-            )}
+	            {parsed.operators.from && (
+	              <FilterChip label={`from: ${parsed.operators.from}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'from'))} />
+	            )}
+	            {parsed.operators.to && (
+	              <FilterChip label={`to: ${parsed.operators.to}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'to'))} />
+	            )}
+	            {parsed.operators.in && (
+	              <FilterChip label={`in: ${parsed.operators.in}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'in'))} />
+	            )}
+	            {parsed.operators.has && (
+	              <FilterChip label={`has: ${parsed.operators.has}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'has'))} />
+	            )}
             {parsed.freeText && (
               <FilterChip label={`"${parsed.freeText}"`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'freeText'))} />
             )}
@@ -269,16 +275,21 @@ function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }
   )
 }
 
-function rebuildQueryWithout(parsed: ReturnType<typeof parseQuery>, drop: 'from' | 'in' | 'freeText'): string {
+function rebuildQueryWithout(parsed: ReturnType<typeof parseQuery>, drop: 'from' | 'to' | 'in' | 'has' | 'freeText'): string {
   const parts: string[] = []
   if (drop !== 'from' && parsed.operators.from) {
     const v = parsed.operators.from
     parts.push(`from:${v.includes(' ') ? `"${v}"` : v}`)
   }
+  if (drop !== 'to' && parsed.operators.to) {
+    const v = parsed.operators.to
+    parts.push(`to:${v.includes(' ') ? `"${v}"` : v}`)
+  }
   if (drop !== 'in' && parsed.operators.in) {
     const v = parsed.operators.in
     parts.push(`in:${v.includes(' ') ? `"${v}"` : v}`)
   }
+  if (drop !== 'has' && parsed.operators.has) parts.push(`has:${parsed.operators.has}`)
   if (drop !== 'freeText' && parsed.freeText) parts.push(parsed.freeText)
   return parts.join(' ')
 }

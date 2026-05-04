@@ -18,20 +18,24 @@ import type { Email } from '@/types/email'
 export interface ParsedQuery {
   operators: {
     from?: string
+    to?: string
     in?:   string
+    has?: string
+    before?: string
+    after?: string
   }
   freeText: string
   raw:     string
 }
 
-const OPERATOR_RE = /\b(from|in):(?:"([^"]*)"|(\S+))/gi
+const OPERATOR_RE = /\b(from|to|in|has|before|after):(?:"([^"]*)"|(\S+))/gi
 
 export function parseQuery(raw: string): ParsedQuery {
   const operators: ParsedQuery['operators'] = {}
   let stripped = raw
 
   for (const match of raw.matchAll(OPERATOR_RE)) {
-    const op    = match[1].toLowerCase() as 'from' | 'in'
+    const op    = match[1].toLowerCase() as keyof ParsedQuery['operators']
     const value = match[2] ?? match[3] ?? ''
     if (value) operators[op] = value
     stripped = stripped.replace(match[0], '')
@@ -54,7 +58,7 @@ export function parseQuery(raw: string): ParsedQuery {
  *   - null — not inside any operator value
  */
 export interface ActiveOperator {
-  operator: 'from' | 'in'
+	  operator: 'from' | 'to' | 'in' | 'has' | 'before' | 'after'
   partial:  string
   start:    number    // index of the operator keyword in the raw string
   end:      number    // index past the partial value
@@ -64,10 +68,10 @@ export function getActiveOperator(raw: string, cursor: number): ActiveOperator |
   // Look backward from cursor for the most recent `from:` or `in:` that the
   // cursor sits inside.
   const slice = raw.slice(0, cursor)
-  const m = slice.match(/(?:^|\s)(from|in):([^\s"]*)$/i)
+  const m = slice.match(/(?:^|\s)(from|to|in|has|before|after):([^\s"]*)$/i)
   if (!m) return null
 
-  const operator = m[1].toLowerCase() as 'from' | 'in'
+  const operator = m[1].toLowerCase() as ActiveOperator['operator']
   const partial  = m[2] ?? ''
   const start    = cursor - m[0].trimStart().length
   return { operator, partial, start, end: cursor }
@@ -92,6 +96,15 @@ export function filterEmailsByQuery(
       if (!hay.includes(needle)) return false
     }
 
+    if (operators.to) {
+      const needle = operators.to.toLowerCase()
+      const hay = [...e.to, ...e.cc, ...e.bcc]
+        .map(a => `${a.address} ${a.name}`)
+        .join(' ')
+        .toLowerCase()
+      if (!hay.includes(needle)) return false
+    }
+
     if (operators.in) {
       const folderTest = folderResolver?.(operators.in)
       if (folderTest) {
@@ -105,6 +118,27 @@ export function filterEmailsByQuery(
       }
     }
 
+    if (operators.has) {
+      const tok = operators.has.toLowerCase()
+      if (tok === 'attachment' || tok === 'attachments') {
+        if (e.attachments.length === 0) return false
+      } else if (tok === 'star' || tok === 'starred') {
+        if (!e.isStarred) return false
+      } else if (tok === 'unread') {
+        if (e.isRead) return false
+      }
+    }
+
+    if (operators.before) {
+      const ts = Date.parse(operators.before)
+      if (!Number.isNaN(ts) && e.date >= endOfDay(ts)) return false
+    }
+
+    if (operators.after) {
+      const ts = Date.parse(operators.after)
+      if (!Number.isNaN(ts) && e.date < startOfDay(ts)) return false
+    }
+
     if (ftLower) {
       const hay = `${e.subject} ${e.from.name} ${e.from.address} ${e.snippet} ${e.bodyText}`
         .toLowerCase()
@@ -113,4 +147,16 @@ export function filterEmailsByQuery(
 
     return true
   })
+}
+
+function startOfDay(ts: number) {
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+}
+
+function endOfDay(ts: number) {
+  const d = new Date(ts)
+  d.setHours(23, 59, 59, 999)
+  return d.getTime()
 }

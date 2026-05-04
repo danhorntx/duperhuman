@@ -12,7 +12,7 @@ export async function searchRoutes(app: FastifyInstance) {
     if (!account) return reply.status(404).send({ error: 'Account not found' })
 
     // Ensure we have a warm cache
-    await syncFolder(accountId, 'INBOX', 200).catch(() => {})
+    await syncFolder(accountId, 'INBOX', 200, 0).catch(() => {})
 
     const all = getCachedEmails(accountId, 'INBOX')
     const query = q.toLowerCase()
@@ -40,7 +40,7 @@ export async function searchRoutes(app: FastifyInstance) {
     if (!account) return reply.status(404).send({ error: 'Account not found' })
 
     // Non-blocking: start sync and return immediately
-    syncFolder(accountId, folder, 100, true).catch(err =>
+    syncFolder(accountId, folder, 100, 0, true).catch(err =>
       console.error('Sync error:', err)
     )
 

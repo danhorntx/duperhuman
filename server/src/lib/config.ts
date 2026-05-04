@@ -6,6 +6,7 @@ export const config = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   syncIntervalMs: parseInt(process.env.SYNC_INTERVAL_MS ?? '30000', 10),
   initialSyncLimit: parseInt(process.env.INITIAL_SYNC_LIMIT ?? '200', 10),
+  allowInsecureTls: process.env.ALLOW_INSECURE_MAIL_TLS === 'true',
 
   // Default account from env (can also be configured via API)
   defaultAccount: process.env.IMAP_USER

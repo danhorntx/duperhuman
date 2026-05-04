@@ -40,7 +40,10 @@ async function request<T>(path: string, init?: RequestOptions): Promise<T> {
       } catch { /* not JSON — keep raw */ }
       throw new ApiError(res.status, msg)
     }
-    return res.json() as Promise<T>
+    if (res.status === 204) return undefined as T
+    const text = await res.text()
+    if (!text) return undefined as T
+    return JSON.parse(text) as T
   } catch (err) {
     if ((err as { name?: string }).name === 'AbortError') {
       throw new ApiError(0, `Request timed out after ${timeoutMs}ms — server unreachable or hung`)
@@ -72,7 +75,7 @@ export const accounts = {
 
 export const emails = {
   list: (accountId: string, folder = 'INBOX', limit = 100, offset = 0) =>
-    request<Email[]>(`/emails?accountId=${accountId}&folder=${encodeURIComponent(folder)}&limit=${limit}&offset=${offset}`),
+    request<Email[]>(`/emails?accountId=${encodeURIComponent(accountId)}&folder=${encodeURIComponent(folder)}&limit=${limit}&offset=${offset}`),
 
   get: (id: string) =>
     request<Email>(`/emails/${encodeURIComponent(id)}`),
@@ -137,7 +140,7 @@ export const attachments = {
 
 export const search = {
   query: (q: string, accountId: string, limit = 20) =>
-    request<Email[]>(`/search?q=${encodeURIComponent(q)}&accountId=${accountId}&limit=${limit}`),
+    request<Email[]>(`/search?q=${encodeURIComponent(q)}&accountId=${encodeURIComponent(accountId)}&limit=${limit}`),
 }
 
 // ─── Sync ─────────────────────────────────────────────────────────────────────
@@ -147,5 +150,5 @@ export const sync = {
     request<void>('/sync', { method: 'POST', body: JSON.stringify({ accountId, folder }) }),
 
   status: (accountId: string) =>
-    request<{ status: string; progress: number; lastSync: number }>(`/sync/status?accountId=${accountId}`),
+    request<{ status: string; progress: number; lastSync: number }>(`/sync/status?accountId=${encodeURIComponent(accountId)}`),
 }

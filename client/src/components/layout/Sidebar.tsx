@@ -23,6 +23,10 @@ interface SidebarProps {
   onAddAccount: () => void
 }
 
+function isLabelFolder(folder: ActiveFolder): folder is { kind: 'label'; id: string } {
+  return typeof folder === 'object' && folder !== null && folder.kind === 'label'
+}
+
 export function Sidebar({ onAddAccount }: SidebarProps) {
   const accounts        = useEmailStore(s => s.accounts)
   const activeAccountId = useEmailStore(s => s.activeAccountId)
@@ -157,10 +161,10 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
     setActiveAccount(id)
   }
 
-  const isLabelActive = (id: string): boolean => {
-    const af = activeState.activeFolder
-    return typeof af === 'object' && af !== null && (af as any).kind === 'label' && (af as any).id === id
-  }
+	  const isLabelActive = (id: string): boolean => {
+	    const af = activeState.activeFolder
+	    return isLabelFolder(af) && af.id === id
+	  }
 
   const inboxUnread = activeState.activeFolder === 'INBOX'
     ? activeState.emails.filter(e => !e.isRead).length
@@ -177,7 +181,7 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
   ]
 
   const isMac = typeof window !== 'undefined' &&
-                (window as any).electronAPI?.platform === 'darwin'
+	                (window as typeof window & { electronAPI?: { platform?: string } }).electronAPI?.platform === 'darwin'
 
   // ─ COLLAPSED RENDERING ────────────────────────────────────────────────────
   if (collapsed) {

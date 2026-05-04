@@ -1,5 +1,7 @@
 import nodemailer from 'nodemailer'
 import type Mail from 'nodemailer/lib/mailer/index.js'
+import SMTPTransport from 'nodemailer/lib/smtp-transport/index.js'
+import { config } from '../lib/config.js'
 
 export interface SmtpAccount {
   id: string
@@ -45,15 +47,15 @@ function getTransport(account: SmtpAccount): nodemailer.Transporter {
   const cached = transportCache.get(key)
   if (cached) return cached
 
-  const transport = nodemailer.createTransport({
+  const options: SMTPTransport.Options = {
     host:    account.smtpHost,
     port:    account.smtpPort,
     secure:  account.smtpSecure,
     auth:    { user: account.username, pass: account.password },
-    tls:     { rejectUnauthorized: false },
-    pool:    false,                  // explicit — one connection per send
+    tls:     { rejectUnauthorized: !config.allowInsecureTls },
     ...SMTP_TIMEOUTS,
-  })
+  }
+  const transport = nodemailer.createTransport(options)
 
   transportCache.set(key, transport)
   return transport

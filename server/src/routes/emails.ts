@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { getAccount, syncFolder, getCachedEmails, invalidateCache, resolveImapFolder } from '../services/sync.js'
-import { addFlags, removeFlags, moveMessages, fetchAttachmentByUid } from '../services/imap.js'
+import { addFlags, removeFlags, moveMessages, fetchAttachmentByUid, setLabels } from '../services/imap.js'
 import { sendEmail } from '../services/smtp.js'
 
 // Helper: parse "accountId:folder:uid" id
@@ -19,10 +19,34 @@ const GMAIL_TRASH = '[Gmail]/Trash'
 const GMAIL_SPAM = '[Gmail]/Spam'
 
 function trashFolder(host: string) {
-  return host.includes('gmail') ? GMAIL_TRASH : 'Trash'
+  return host.toLowerCase().includes('gmail') ? GMAIL_TRASH : 'Trash'
 }
 function spamFolder(host: string) {
-  return host.includes('gmail') ? GMAIL_SPAM : 'Spam'
+  return host.toLowerCase().includes('gmail') ? GMAIL_SPAM : 'Spam'
+}
+
+function isGmailHost(host: string) {
+  const h = host.toLowerCase()
+  return h.includes('gmail') || h.includes('googlemail')
+}
+
+async function runBulk(ids: string[], fn: (id: string) => Promise<void>) {
+  const failures: { id: string; error: string }[] = []
+  for (const id of ids) {
+    try {
+      await fn(id)
+    } catch (err) {
+      failures.push({ id, error: err instanceof Error ? err.message : String(err) })
+    }
+  }
+  return failures
+}
+
+function sendBulkResult(reply: import('fastify').FastifyReply, failures: { id: string; error: string }[]) {
+  if (failures.length > 0) {
+    return reply.status(502).send({ error: 'One or more mail server operations failed', failures })
+  }
+  return reply.status(204).send()
 }
 
 export async function emailRoutes(app: FastifyInstance) {
@@ -136,87 +160,94 @@ export async function emailRoutes(app: FastifyInstance) {
 
   // Archive
   app.post<{ Body: { ids: string[] } }>('/emails/archive', async (req, reply) => {
-    for (const id of req.body.ids) {
+    const failures = await runBulk(req.body.ids, async (id) => {
       const { accountId, folder, uid } = parseEmailId(id)
       const account = getAccount(accountId)
-      if (!account) continue
+      if (!account) throw new Error('Account not found')
       // Gmail: remove \Inbox flag. Other providers: move to Archive folder
-      if (account.imapHost.includes('gmail')) {
-        await removeFlags(account, folder, [uid], ['\\Inbox']).catch(() => {})
+      if (isGmailHost(account.imapHost)) {
+        await removeFlags(account, folder, [uid], ['\\Inbox'])
       } else {
-        await moveMessages(account, folder, [uid], 'Archive').catch(() => {})
+        await moveMessages(account, folder, [uid], 'Archive')
       }
       invalidateCache(accountId, folder)
-    }
-    return reply.status(204).send()
+    })
+    return sendBulkResult(reply, failures)
   })
 
   // Trash
   app.post<{ Body: { ids: string[] } }>('/emails/trash', async (req, reply) => {
-    for (const id of req.body.ids) {
+    const failures = await runBulk(req.body.ids, async (id) => {
       const { accountId, folder, uid } = parseEmailId(id)
       const account = getAccount(accountId)
-      if (!account) continue
-      await moveMessages(account, folder, [uid], trashFolder(account.imapHost)).catch(() => {})
+      if (!account) throw new Error('Account not found')
+      await moveMessages(account, folder, [uid], trashFolder(account.imapHost))
       invalidateCache(accountId, folder)
-    }
-    return reply.status(204).send()
+    })
+    return sendBulkResult(reply, failures)
   })
 
   // Restore (from archive/trash)
   app.post<{ Body: { ids: string[] } }>('/emails/restore', async (req, reply) => {
-    for (const id of req.body.ids) {
+    const failures = await runBulk(req.body.ids, async (id) => {
       const { accountId, folder, uid } = parseEmailId(id)
       const account = getAccount(accountId)
-      if (!account) continue
-      await moveMessages(account, folder, [uid], 'INBOX').catch(() => {})
+      if (!account) throw new Error('Account not found')
+      if (isGmailHost(account.imapHost)) {
+        await setLabels(account, folder, [uid], ['\\Inbox'])
+      } else {
+        await moveMessages(account, folder, [uid], 'INBOX')
+      }
       invalidateCache(accountId, folder)
-    }
-    return reply.status(204).send()
+      invalidateCache(accountId, 'INBOX')
+    })
+    return sendBulkResult(reply, failures)
   })
 
   // Mark read/unread
   app.post<{ Body: { ids: string[]; read: boolean } }>('/emails/read', async (req, reply) => {
     const { ids, read } = req.body
-    for (const id of ids) {
+    const failures = await runBulk(ids, async (id) => {
       const { accountId, folder, uid } = parseEmailId(id)
       const account = getAccount(accountId)
-      if (!account) continue
+      if (!account) throw new Error('Account not found')
       if (read) {
-        await addFlags(account, folder, [uid], ['\\Seen']).catch(() => {})
+        await addFlags(account, folder, [uid], ['\\Seen'])
       } else {
-        await removeFlags(account, folder, [uid], ['\\Seen']).catch(() => {})
+        await removeFlags(account, folder, [uid], ['\\Seen'])
       }
-    }
-    return reply.status(204).send()
+      invalidateCache(accountId, folder)
+    })
+    return sendBulkResult(reply, failures)
   })
 
   // Star / unstar
   app.post<{ Body: { ids: string[]; starred: boolean } }>('/emails/star', async (req, reply) => {
     const { ids, starred } = req.body
-    for (const id of ids) {
+    const failures = await runBulk(ids, async (id) => {
       const { accountId, folder, uid } = parseEmailId(id)
       const account = getAccount(accountId)
-      if (!account) continue
+      if (!account) throw new Error('Account not found')
       if (starred) {
-        await addFlags(account, folder, [uid], ['\\Flagged']).catch(() => {})
+        await addFlags(account, folder, [uid], ['\\Flagged'])
       } else {
-        await removeFlags(account, folder, [uid], ['\\Flagged']).catch(() => {})
+        await removeFlags(account, folder, [uid], ['\\Flagged'])
       }
-    }
-    return reply.status(204).send()
+      invalidateCache(accountId, folder)
+    })
+    return sendBulkResult(reply, failures)
   })
 
   // Spam
   app.post<{ Body: { ids: string[] } }>('/emails/spam', async (req, reply) => {
-    for (const id of req.body.ids) {
+    const failures = await runBulk(req.body.ids, async (id) => {
       const { accountId, folder, uid } = parseEmailId(id)
       const account = getAccount(accountId)
-      if (!account) continue
-      await moveMessages(account, folder, [uid], spamFolder(account.imapHost)).catch(() => {})
+      if (!account) throw new Error('Account not found')
+      await moveMessages(account, folder, [uid], spamFolder(account.imapHost))
       invalidateCache(accountId, folder)
-    }
-    return reply.status(204).send()
+    })
+    return sendBulkResult(reply, failures)
   })
 
   // Snooze (server just logs it; real resurface is client-side for now)

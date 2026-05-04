@@ -43,14 +43,14 @@ export async function accountRoutes(app: FastifyInstance) {
   // Add account
   app.post<{
     Body: {
-      name: string; email: string; password: string
+	      id?: string; name: string; email: string; password: string
       imapHost: string; imapPort: number; imapTls: boolean
       smtpHost: string; smtpPort: number; smtpSecure: boolean
       username?: string
     }
   }>('/accounts', async (req, reply) => {
     const body = req.body
-    const id = `acc_${crypto.randomBytes(6).toString('hex')}`
+    const id = body.id ?? `acc_${crypto.randomBytes(6).toString('hex')}`
 
     console.log(`[POST /accounts] start id=${id} email=${body.email} host=${body.imapHost}`)
 

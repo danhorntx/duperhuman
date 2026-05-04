@@ -4,6 +4,7 @@ import { useEmailStore, selectActiveState } from '@/store/emailStore'
 import { useUiStore } from '@/store/uiStore'
 import { useVirtualList } from '@/hooks/useVirtualList'
 import { EmailRow } from './EmailRow'
+import type { ActiveFolder } from '@/types/email'
 
 const ROW_HEIGHT = 56
 
@@ -29,7 +30,7 @@ function SkeletonRows() {
 }
 
 function EmptyState({ folder }: { folder: unknown }) {
-  const isLabel = typeof folder === 'object' && folder !== null && (folder as any).kind === 'label'
+  const isLabel = isLabelFolder(folder)
   const label = isLabel ? 'this label' : (folder === 'INBOX' ? 'INBOX' : String(folder))
   return (
     <div className="flex flex-col items-center justify-center h-full py-20 gap-4">
@@ -52,6 +53,10 @@ function EmptyState({ folder }: { folder: unknown }) {
       </div>
     </div>
   )
+}
+
+function isLabelFolder(folder: unknown): folder is Extract<ActiveFolder, { kind: 'label' }> {
+  return typeof folder === 'object' && folder !== null && 'kind' in folder && folder.kind === 'label'
 }
 
 export function EmailList() {
