@@ -1,0 +1,151 @@
+import { fetchEmails, type ImapAccount } from './imap.js'
+
+// ─── Folder name normalisation ────────────────────────────────────────────────
+// Gmail uses [Gmail]/… prefixes; other providers use bare names.
+
+const GMAIL_FOLDER_MAP: Record<string, string> = {
+  'Sent':     '[Gmail]/Sent Mail',
+  'Drafts':   '[Gmail]/Drafts',
+  'Trash':    '[Gmail]/Trash',
+  'Spam':     '[Gmail]/Spam',
+  'Starred':  '[Gmail]/Starred',
+  'All Mail': '[Gmail]/All Mail',
+}
+
+function isGmail(host: string) {
+  return host.toLowerCase().includes('gmail') || host.toLowerCase().includes('googlemail')
+}
+
+export function resolveImapFolder(imapHost: string, logicalFolder: string): string {
+  if (isGmail(imapHost)) return GMAIL_FOLDER_MAP[logicalFolder] ?? logicalFolder
+  return logicalFolder
+}
+
+// ─── Per-account operation queue (prevents concurrent openBox on same conn) ───
+
+const accountQueues = new Map<string, Promise<unknown>>()
+
+function enqueue<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
+  const tail = accountQueues.get(accountId) ?? Promise.resolve()
+  const next = tail.then(fn, fn)          // always continue even if prev failed
+  accountQueues.set(accountId, next.catch(() => {}))
+  return next as Promise<T>
+}
+
+// ─── In-memory account store ──────────────────────────────────────────────────
+// For production, persist to a SQLite/encrypted file. For now, memory + env.
+
+export interface StoredAccount extends ImapAccount {
+  name: string
+  email: string
+  smtpHost: string
+  smtpPort: number
+  smtpSecure: boolean
+  isActive: boolean
+  lastSync: number
+}
+
+const accountStore = new Map<string, StoredAccount>()
+const emailCache = new Map<string, ReturnType<typeof fetchEmails> extends Promise<infer T> ? T : never>()
+
+// ─── Cache: folder → emails ───────────────────────────────────────────────────
+// Key: `${accountId}:${folder}`
+const folderCache = new Map<string, {
+  emails: Awaited<ReturnType<typeof fetchEmails>>
+  fetchedAt: number
+}>()
+
+const CACHE_TTL = 30_000 // 30s
+
+export function registerAccount(account: StoredAccount) {
+  accountStore.set(account.id, account)
+}
+
+export function getAccount(id: string): StoredAccount | undefined {
+  return accountStore.get(id)
+}
+
+export function listAccounts(): StoredAccount[] {
+  return [...accountStore.values()]
+}
+
+export function removeAccount(id: string) {
+  accountStore.delete(id)
+}
+
+export async function syncFolder(
+  accountId: string,
+  folder = 'INBOX',
+  limit = 100,
+  offset = 0,
+  forceRefresh = false
+): Promise<Awaited<ReturnType<typeof fetchEmails>>> {
+  const account = accountStore.get(accountId)
+  if (!account) throw new Error(`Account ${accountId} not found`)
+
+  // Cache key MUST include limit + offset so a "load older" call doesn't
+  // hit the cached first-page result and return nothing.
+  const cacheKey = `${accountId}:${folder}:${limit}:${offset}`
+  const cached = folderCache.get(cacheKey)
+  const now = Date.now()
+
+  if (!forceRefresh && cached && now - cached.fetchedAt < CACHE_TTL) {
+    return cached.emails
+  }
+
+  // Translate logical folder name → real IMAP mailbox name, serialise per account
+  return enqueue(accountId, async () => {
+    const imapFolder = resolveImapFolder(account.imapHost, folder)
+    console.log(`[syncFolder] ${accountId} ${imapFolder} limit=${limit} offset=${offset}`)
+    const raw = await fetchEmails(account, imapFolder, limit, offset)
+    console.log(`[syncFolder] ${accountId} ${imapFolder} → ${raw.length} emails`)
+    // Rewrite folder + id to use the logical name so client stays consistent
+    const emails = raw.map(e => ({
+      ...e,
+      folder,
+      id: `${accountId}:${folder}:${e.uid}`,
+    }))
+    folderCache.set(cacheKey, { emails, fetchedAt: Date.now() })
+    account.lastSync = Date.now()
+    return emails
+  })
+}
+
+export function getCachedEmails(accountId: string, folder: string) {
+  return folderCache.get(`${accountId}:${folder}`)?.emails ?? []
+}
+
+export function invalidateCache(accountId: string, folder?: string) {
+  if (folder) {
+    folderCache.delete(`${accountId}:${folder}`)
+  } else {
+    for (const key of folderCache.keys()) {
+      if (key.startsWith(`${accountId}:`)) folderCache.delete(key)
+    }
+  }
+}
+
+// ─── Background polling ───────────────────────────────────────────────────────
+
+let pollingInterval: NodeJS.Timeout | null = null
+
+export function startBackgroundSync(intervalMs = 30_000) {
+  if (pollingInterval) return
+  pollingInterval = setInterval(async () => {
+    for (const account of accountStore.values()) {
+      if (!account.isActive) continue
+      try {
+        await syncFolder(account.id, 'INBOX', 50, 0, true)
+      } catch (err) {
+        console.error(`Background sync failed for ${account.id}:`, err)
+      }
+    }
+  }, intervalMs)
+}
+
+export function stopBackgroundSync() {
+  if (pollingInterval) {
+    clearInterval(pollingInterval)
+    pollingInterval = null
+  }
+}

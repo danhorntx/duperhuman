@@ -1,0 +1,647 @@
+import { useState, useRef, useEffect, useMemo, forwardRef, useImperativeHandle } from 'react'
+import { motion, AnimatePresence } from 'framer-motion'
+import {
+  XIcon, PaperPlaneRightIcon, PaperclipIcon, TrashIcon,
+  ClockIcon, ArrowsOutIcon, ArrowsInIcon, UserIcon,
+} from '@phosphor-icons/react'
+import { useUiStore } from '@/store/uiStore'
+import { useEmailStore, selectSelectedEmail } from '@/store/emailStore'
+import { emails as emailsApi } from '@/lib/api'
+import { SnippetPicker } from '@/components/snippets/SnippetPicker'
+import { getContacts, filterContacts, type RankedContact } from '@/lib/contacts'
+import type { Snippet } from '@/types/email'
+
+// `;` opens the snippet picker. Tracked at module scope per ComposeWindow
+// instance via React state below.
+const SNIPPET_TRIGGER = ';'
+
+interface Recipient { name: string; address: string; raw: string }
+
+interface RecipientFieldHandle {
+  focus: () => void
+}
+
+const RecipientField = forwardRef<RecipientFieldHandle, {
+  label: string
+  recipients: Recipient[]
+  onAdd: (r: Recipient) => void
+  onRemove: (i: number) => void
+  accountId?: string | null
+}>(function RecipientField({ label, recipients, onAdd, onRemove, accountId = null }, ref) {
+  const [input, setInput]       = useState('')
+  const [contacts, setContacts] = useState<RankedContact[]>([])
+  const [acOpen, setAcOpen]     = useState(false)
+  const [acCursor, setAcCursor] = useState(0)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useImperativeHandle(ref, () => ({ focus: () => inputRef.current?.focus() }))
+
+  // Lazy-load contacts the first time the user starts typing in this field.
+  // getContacts() has its own 30s TTL cache + auto-invalidation on sync.
+  useEffect(() => {
+    if (input.length > 0 && contacts.length === 0) {
+      getContacts(accountId).then(setContacts)
+    }
+  }, [input, contacts.length, accountId])
+
+  // Filter the contact list. Hide anyone already in this field so we don't
+  // suggest them twice.
+  const suggestions = useMemo(() => {
+    if (!input.trim()) return []
+    const present = new Set(recipients.map(r => r.address.toLowerCase()))
+    return filterContacts(contacts, input.trim(), 12)
+      .filter(c => !present.has(c.address.toLowerCase()))
+  }, [input, contacts, recipients])
+
+  // Reset cursor when suggestions change
+  useEffect(() => setAcCursor(0), [suggestions.length, input])
+  useEffect(() => setAcOpen(suggestions.length > 0), [suggestions.length])
+
+  const commitFromInput = () => {
+    const addr = input.trim()
+    if (!addr) return
+    const m = addr.match(/^(.+?)\s*<(.+?)>$/)
+    if (m) onAdd({ name: m[1].trim(), address: m[2].trim(), raw: addr })
+    else   onAdd({ name: '', address: addr, raw: addr })
+    setInput('')
+    setAcOpen(false)
+  }
+
+  const commitFromContact = (c: RankedContact) => {
+    onAdd({ name: c.name, address: c.address, raw: c.address })
+    setInput('')
+    setAcOpen(false)
+    inputRef.current?.focus()
+  }
+
+  return (
+    <div className="relative flex items-start gap-2 px-4 py-2 border-b border-[var(--border-subtle)]">
+      <span className="text-xs font-medium text-[var(--text-muted)] pt-1 w-6 flex-shrink-0">
+        {label}
+      </span>
+      <div className="flex flex-wrap gap-1 flex-1 min-w-0">
+        {recipients.map((r, i) => (
+          <span
+            key={i}
+            title={r.address}
+            className="flex items-center gap-1 px-2 py-0.5 rounded-md text-xs"
+            style={{
+              background: 'var(--accent-faint)',
+              border:     '1px solid var(--border-accent)',
+              color:      'var(--accent)',
+            }}
+          >
+            {r.name || r.address}
+            <button
+              onClick={() => onRemove(i)}
+              className="hover:opacity-70 transition-opacity"
+            >
+              <XIcon size={10} weight="bold" />
+            </button>
+          </span>
+        ))}
+        <input
+          ref={inputRef}
+          type="text"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => {
+            // Autocomplete navigation has priority over the default
+            // commit-on-Enter behaviour
+            if (acOpen && suggestions.length > 0) {
+              if (e.key === 'ArrowDown') {
+                e.preventDefault()
+                setAcCursor(c => Math.min(c + 1, suggestions.length - 1))
+                return
+              }
+              if (e.key === 'ArrowUp') {
+                e.preventDefault()
+                setAcCursor(c => Math.max(c - 1, 0))
+                return
+              }
+              if (e.key === 'Enter' || e.key === 'Tab') {
+                e.preventDefault()
+                commitFromContact(suggestions[acCursor])
+                return
+              }
+              if (e.key === 'Escape') {
+                e.preventDefault()
+                setAcOpen(false)
+                return
+              }
+            }
+            if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commitFromInput() }
+            if (e.key === 'Backspace' && !input && recipients.length > 0) onRemove(recipients.length - 1)
+          }}
+          onBlur={() => {
+            // Slight delay so a click on the dropdown still registers
+            setTimeout(() => {
+              commitFromInput()
+              setAcOpen(false)
+            }, 120)
+          }}
+          onFocus={() => { if (suggestions.length > 0) setAcOpen(true) }}
+          placeholder={recipients.length === 0 ? 'Add recipient…' : ''}
+          className="flex-1 min-w-[120px] bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none"
+        />
+      </div>
+
+      {/* Contact autocomplete dropdown */}
+      {acOpen && suggestions.length > 0 && (
+        <div
+          className="absolute left-12 right-4 top-full z-30 mt-1 rounded-lg overflow-hidden"
+          style={{
+            background: 'var(--bg-overlay)',
+            border:     '1px solid var(--border-strong)',
+            boxShadow:  '0 12px 32px rgba(0,0,0,0.5)',
+          }}
+          onMouseDown={e => e.preventDefault()}    // keep input focused
+        >
+          <div className="max-h-[280px] overflow-y-auto py-1">
+            {suggestions.map((c, i) => (
+              <button
+                key={c.address}
+                onMouseEnter={() => setAcCursor(i)}
+                onClick={() => commitFromContact(c)}
+                className="w-full flex items-center gap-3 px-3 py-2 text-sm text-left transition-colors duration-75"
+                style={{
+                  background: acCursor === i ? 'var(--bg-active)' : 'transparent',
+                  color:      'var(--text-primary)',
+                }}
+              >
+                <UserIcon size={12} style={{ color: 'var(--text-muted)', flexShrink: 0 }} />
+                <div className="flex-1 min-w-0">
+                  {c.name && (
+                    <div className="text-sm truncate">{c.name}</div>
+                  )}
+                  <div className={`text-xs truncate ${c.name ? 'text-[var(--text-muted)]' : 'text-[var(--text-primary)]'}`}>
+                    {c.address}
+                  </div>
+                </div>
+                {c.count > 1 && (
+                  <span className="text-[10px] text-[var(--text-muted)] flex-shrink-0">
+                    {c.count}×
+                  </span>
+                )}
+                {acCursor === i && <kbd>↵</kbd>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+})
+
+export function ComposeWindow() {
+  const { composeOpen, composeReplyToId, composeForwardId, closeCompose, toast } = useUiStore()
+  const settings = useUiStore(s => s.settings)
+  const setSetting = useUiStore(s => s.setSetting)
+  const replyToEmail = useEmailStore(selectSelectedEmail)
+  const getActiveAccount = useEmailStore(s => s.getActiveAccount)
+  const activeAccount = getActiveAccount()
+
+  // Determine the right "default" full-screen state for this compose session
+  const isReply = !!(composeReplyToId || composeForwardId)
+  const wantFullScreen = isReply ? settings.replyFullScreen : settings.composeFullScreen
+
+  // Per-session override (lets the user toggle within an open window without
+  // changing their saved preference)
+  const [fullScreen, setFullScreen] = useState(wantFullScreen)
+  useEffect(() => { if (composeOpen) setFullScreen(wantFullScreen) }, [composeOpen, wantFullScreen])
+
+  const [to, setTo] = useState<Recipient[]>([])
+  const [cc, setCc] = useState<Recipient[]>([])
+  const [showCc, setShowCc] = useState(false)
+  const [subject, setSubject] = useState('')
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const toFieldRef = useRef<RecipientFieldHandle>(null)
+  const [sending, setSending] = useState(false)
+  const [undoSendTimer, setUndoSendTimer] = useState<number | null>(null)
+  const [undoCancelled, setUndoCancelled] = useState(false)
+
+  // ─ Snippet picker state ───────────────────────────────────────────────────
+  // We remember (a) where in the DOM the trigger `;` was inserted so we can
+  // splice the typed query out and the snippet body in, and (b) the live
+  // query the user types after the trigger for filtering.
+  const [snippetOpen,   setSnippetOpen]   = useState(false)
+  const [snippetAnchor, setSnippetAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [snippetQuery,  setSnippetQuery]  = useState('')
+  // Range covering the trigger `;` + any chars typed after it. We replace
+  // this range when the snippet is inserted.
+  const triggerRangeRef = useRef<Range | null>(null)
+  const triggerStartRef = useRef<{ node: Node; offset: number } | null>(null)
+
+  // Pre-fill for replies/forwards/new
+  useEffect(() => {
+    if (!composeOpen) return
+    if (composeReplyToId && replyToEmail) {
+      setTo([{ name: replyToEmail.from.name, address: replyToEmail.from.address, raw: replyToEmail.from.address }])
+      setSubject(replyToEmail.subject.startsWith('Re:') ? replyToEmail.subject : `Re: ${replyToEmail.subject}`)
+      if (bodyRef.current) {
+        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)">${replyToEmail.bodyHtml || replyToEmail.bodyText}</blockquote>`
+      }
+    } else if (composeForwardId && replyToEmail) {
+      setTo([])
+      setSubject(replyToEmail.subject.startsWith('Fwd:') ? replyToEmail.subject : `Fwd: ${replyToEmail.subject}`)
+      if (bodyRef.current) {
+        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)"><strong>Forwarded message:</strong><br/>${replyToEmail.bodyHtml || replyToEmail.bodyText}</blockquote>`
+      }
+    } else {
+      setTo([])
+      setCc([])
+      setSubject('')
+      if (bodyRef.current) bodyRef.current.innerHTML = ''
+    }
+  }, [composeOpen, composeReplyToId, composeForwardId, replyToEmail])
+
+  // Focus the right field after the open animation settles. New compose and
+  // forward go to the To input; replies go to the body so the user can start
+  // typing their response immediately.
+  useEffect(() => {
+    if (!composeOpen) return
+    const focusTo = !composeReplyToId            // new compose OR forward
+    const focusBody = !!composeReplyToId         // reply / reply-all
+    const t = setTimeout(() => {
+      if (focusTo) {
+        toFieldRef.current?.focus()
+      } else if (focusBody && bodyRef.current) {
+        bodyRef.current.focus()
+        // Place caret at start of body so user types ABOVE the quote
+        const range = document.createRange()
+        range.setStart(bodyRef.current, 0)
+        range.collapse(true)
+        const sel = window.getSelection()
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      }
+    }, 220) // matches the motion `duration: 0.18` + a hair of buffer
+    return () => clearTimeout(t)
+  }, [composeOpen, composeReplyToId, composeForwardId])
+
+  const sendEmail = async () => {
+    if (!activeAccount || to.length === 0) return
+
+    const bodyHtml = bodyRef.current?.innerHTML ?? ''
+    const bodyText = bodyRef.current?.innerText ?? ''
+
+    toast('Sending in 5s…', {
+      action: { label: 'Undo', fn: () => { setUndoCancelled(true) } },
+      duration: 5500,
+    })
+    closeCompose()
+
+    const timer = window.setTimeout(async () => {
+      if (undoCancelled) { setUndoCancelled(false); return }
+      setSending(true)
+      try {
+        await emailsApi.send({
+          accountId: activeAccount.id,
+          to: to.map(r => ({ name: r.name, address: r.address })),
+          cc: cc.map(r => ({ name: r.name, address: r.address })),
+          subject,
+          bodyHtml,
+          bodyText,
+          replyToId: composeReplyToId ?? undefined,
+          forwardOfId: composeForwardId ?? undefined,
+        })
+        toast('Sent')
+      } catch (err) {
+        toast('Failed to send — check your connection')
+        console.error(err)
+      } finally {
+        setSending(false)
+      }
+    }, 5000)
+    setUndoSendTimer(timer)
+  }
+
+  useEffect(() => () => { if (undoSendTimer) clearTimeout(undoSendTimer) }, [undoSendTimer])
+
+  // Cmd+Enter to send
+  useEffect(() => {
+    if (!composeOpen) return
+    const handler = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault()
+        sendEmail()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [composeOpen, to, subject, sending]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ─ Snippet picker handlers ────────────────────────────────────────────────
+
+  const closeSnippetPicker = () => {
+    setSnippetOpen(false)
+    setSnippetAnchor(null)
+    setSnippetQuery('')
+    triggerRangeRef.current = null
+    triggerStartRef.current = null
+  }
+
+  const openSnippetPicker = () => {
+    const sel = window.getSelection()
+    if (!sel || sel.rangeCount === 0) return
+    const range = sel.getRangeAt(0).cloneRange()
+    // Anchor the picker at the caret's screen position
+    const rect = range.getBoundingClientRect()
+    // For collapsed selections at start of an empty line, getBoundingClientRect
+    // may return zeroes — fall back to the body element rect.
+    const x = rect.left || (bodyRef.current?.getBoundingClientRect().left ?? 100)
+    const y = rect.bottom || (bodyRef.current?.getBoundingClientRect().top ?? 100)
+    triggerStartRef.current = { node: range.startContainer, offset: range.startOffset }
+    setSnippetAnchor({ x, y })
+    setSnippetQuery('')
+    setSnippetOpen(true)
+  }
+
+  // Watch keystrokes inside the contentEditable body to detect / extend the
+  // trigger and to cancel it when the caret leaves the trigger zone.
+  const onBodyKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Markdown shortcuts
+    if (e.key === 'b' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); document.execCommand('bold'); return }
+    if (e.key === 'i' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); document.execCommand('italic'); return }
+
+    if (snippetOpen) {
+      // Backspace: trim the query; close picker if we delete past the `;`
+      if (e.key === 'Backspace') {
+        if (snippetQuery.length === 0) {
+          // Caret is sitting just after `;` — let the default backspace remove
+          // the trigger and close the picker.
+          closeSnippetPicker()
+          return
+        }
+        setSnippetQuery(q => q.slice(0, -1))
+        return
+      }
+      // Plain printable char extends the query (Enter / Tab / Esc are
+      // handled by the picker's own window-level listener)
+      if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        setSnippetQuery(q => q + e.key)
+        return
+      }
+      // Whitespace / arrow keys cancel
+      if (e.key === ' ' || e.key.startsWith('Arrow')) {
+        closeSnippetPicker()
+        return
+      }
+      return
+    }
+
+    if (e.key === SNIPPET_TRIGGER) {
+      // Defer to next tick so the `;` actually lands in the DOM before we
+      // anchor the picker. We don't preventDefault — keeping the visible
+      // `;` gives the user clear feedback.
+      setTimeout(openSnippetPicker, 0)
+    }
+  }
+
+  /**
+   * Replace the typed `;query` range with the snippet's HTML body and place
+   * the caret at the end of the inserted content.
+   */
+  const insertSnippet = (snippet: Snippet) => {
+    if (!bodyRef.current) { closeSnippetPicker(); return }
+    const start = triggerStartRef.current
+    if (!start) { closeSnippetPicker(); return }
+
+    const sel = window.getSelection()
+    if (!sel) { closeSnippetPicker(); return }
+
+    // Build a range from the `;` (start) to the current caret (end).
+    // We re-locate the current caret via the live selection rather than the
+    // stored range so it's always up to date with what the user typed.
+    const liveRange = sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+    if (!liveRange) { closeSnippetPicker(); return }
+
+    const range = document.createRange()
+    try {
+      range.setStart(start.node, start.offset)
+      range.setEnd(liveRange.endContainer, liveRange.endOffset)
+    } catch {
+      closeSnippetPicker(); return
+    }
+
+    range.deleteContents()
+
+    // Insert the snippet body as parsed HTML so blockquotes / line breaks
+    // render correctly. We use a temporary container so we can place the
+    // caret after the LAST inserted node.
+    const tmp = document.createElement('div')
+    tmp.innerHTML = snippet.body
+    const frag = document.createDocumentFragment()
+    let lastNode: ChildNode | null = null
+    while (tmp.firstChild) {
+      lastNode = tmp.firstChild
+      frag.appendChild(tmp.firstChild)
+    }
+    range.insertNode(frag)
+
+    // Caret after the inserted content
+    if (lastNode) {
+      const caret = document.createRange()
+      caret.setStartAfter(lastNode)
+      caret.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(caret)
+    }
+
+    closeSnippetPicker()
+    bodyRef.current.focus()
+  }
+
+  // Toggle the per-session full-screen mode AND save the preference so it
+  // becomes the new default for this session type.
+  const toggleFullScreen = () => {
+    const next = !fullScreen
+    setFullScreen(next)
+    if (isReply) setSetting('replyFullScreen', next)
+    else         setSetting('composeFullScreen', next)
+  }
+
+  const titleText =
+    composeReplyToId ? 'Reply' :
+    composeForwardId ? 'Forward' :
+    'New Message'
+
+  // ─ Layout: full-screen vs corner panel ─────────────────────────────────────
+  const containerStyle = fullScreen
+    ? {
+        // Sit inside main-area: top bar is 44px, sidebar is on the left of
+        // .app-shell so we anchor to the right of the sidebar.
+        position: 'fixed' as const,
+        top: 0, right: 0, bottom: 0,
+        left: 'var(--sidebar-width)',
+        background: 'var(--bg-base)',
+        borderLeft: '1px solid var(--border-subtle)',
+        boxShadow: '-12px 0 60px rgba(0,0,0,0.5)',
+        zIndex: 50,
+      }
+    : {
+        position: 'fixed' as const,
+        bottom: 0, right: 24,
+        width: 540,
+        maxHeight: '80vh',
+        background: 'var(--bg-overlay)',
+        border: '1px solid var(--border-strong)',
+        borderBottom: 'none',
+        borderRadius: '12px 12px 0 0',
+        boxShadow: '0 -8px 40px rgba(0,0,0,0.5)',
+        zIndex: 50,
+      }
+
+  // Animation parameters — fade-in for fullscreen, slide-up for corner panel
+  const motionProps = fullScreen
+    ? {
+        initial: { opacity: 0 },
+        animate: { opacity: 1 },
+        exit:    { opacity: 0 },
+      }
+    : {
+        initial: { opacity: 0, y: 20, scale: 0.97 },
+        animate: { opacity: 1, y: 0,  scale: 1 },
+        exit:    { opacity: 0, y: 16, scale: 0.97 },
+      }
+
+  return (
+    <AnimatePresence>
+      {composeOpen && (
+        <motion.div
+          className="flex flex-col"
+          {...motionProps}
+          transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+          style={containerStyle}
+        >
+          {/* Title bar */}
+          <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--border-subtle)]">
+            <span className="text-sm font-semibold text-[var(--text-primary)]">{titleText}</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={toggleFullScreen}
+                className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                title={fullScreen ? 'Shrink to corner' : 'Open full screen'}
+              >
+                {fullScreen ? <ArrowsInIcon size={13} /> : <ArrowsOutIcon size={13} />}
+              </button>
+              <button
+                onClick={closeCompose}
+                className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                title="Discard"
+              >
+                <TrashIcon size={13} weight="regular" />
+              </button>
+              <button
+                onClick={closeCompose}
+                className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
+                style={{ color: 'var(--text-muted)' }}
+                title="Close (Esc)"
+              >
+                <XIcon size={13} weight="bold" />
+              </button>
+            </div>
+          </div>
+
+          {/* Content scroll container */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {/* Recipients */}
+            <RecipientField
+              ref={toFieldRef}
+              label="To" recipients={to}
+              accountId={activeAccount?.id ?? null}
+              onAdd={r => setTo(p => [...p, r])}
+              onRemove={i => setTo(p => p.filter((_, j) => j !== i))}
+            />
+
+            {showCc && (
+              <RecipientField
+                label="Cc" recipients={cc}
+                accountId={activeAccount?.id ?? null}
+                onAdd={r => setCc(p => [...p, r])}
+                onRemove={i => setCc(p => p.filter((_, j) => j !== i))}
+              />
+            )}
+
+            {!showCc && (
+              <button
+                onClick={() => setShowCc(true)}
+                className="text-xs text-[var(--text-muted)] px-4 py-1 hover:text-[var(--text-secondary)] transition-colors text-left flex-shrink-0"
+              >
+                + Cc / Bcc
+              </button>
+            )}
+
+            {/* Subject */}
+            <div className="px-4 py-2 border-b border-[var(--border-subtle)] flex-shrink-0">
+              <input
+                type="text"
+                value={subject}
+                onChange={e => setSubject(e.target.value)}
+                placeholder="Subject"
+                className="w-full bg-transparent text-sm font-medium text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none"
+              />
+            </div>
+
+            {/* Body */}
+            <div
+              ref={bodyRef}
+              contentEditable
+              suppressContentEditableWarning
+              data-placeholder="Write your message… try ; for a snippet, **bold**, *italic*"
+              className="compose-editor flex-1 px-4 py-3 overflow-y-auto"
+              style={{ minHeight: fullScreen ? 'auto' : 160, maxHeight: fullScreen ? 'none' : 340 }}
+              onKeyDown={onBodyKeyDown}
+            />
+          </div>
+
+          {/* Snippet picker (anchored to caret) */}
+          <SnippetPicker
+            open={snippetOpen}
+            anchor={snippetAnchor}
+            query={snippetQuery}
+            onSelect={insertSnippet}
+            onCancel={closeSnippetPicker}
+          />
+
+          {/* Footer */}
+          <div
+            className="flex items-center gap-2 px-4 py-3 border-t border-[var(--border-subtle)] flex-shrink-0"
+            style={{ background: 'rgba(0,0,0,0.2)' }}
+          >
+            <button
+              onClick={sendEmail}
+              disabled={sending || to.length === 0}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-100 disabled:opacity-40"
+              style={{ background: 'var(--accent)', color: '#1a0617' }}
+            >
+              <PaperPlaneRightIcon size={13} weight="bold" />
+              {sending ? 'Sending…' : 'Send'}
+              <kbd style={{ background: 'rgba(26,6,23,0.2)', color: '#1a0617', borderColor: 'rgba(26,6,23,0.3)' }}>
+                ⌘↵
+              </kbd>
+            </button>
+
+            <button
+              className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
+              style={{ color: 'var(--text-muted)' }}
+              title="Schedule send"
+            >
+              <ClockIcon size={14} />
+            </button>
+
+            <button
+              className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
+              style={{ color: 'var(--text-muted)' }}
+              title="Attach file"
+            >
+              <PaperclipIcon size={14} />
+            </button>
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
+  )
+}

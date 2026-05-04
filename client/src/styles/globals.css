@@ -1,0 +1,292 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── Design tokens (Superhuman app palette) ──────────────────────────────── */
+:root {
+  --bg-base:          #0d0c1a;
+  --bg-elevated:      #13121f;
+  --bg-overlay:       #1a1928;
+  --bg-hover:         rgba(203, 183, 251, 0.06);
+  --bg-active:        rgba(203, 183, 251, 0.11);
+  --bg-selected:      rgba(203, 183, 251, 0.09);
+
+  --border-subtle:    rgba(255, 255, 255, 0.07);
+  --border-strong:    rgba(255, 255, 255, 0.13);
+  --border-accent:    rgba(203, 183, 251, 0.25);
+
+  --text-primary:     #e8e6f0;
+  --text-secondary:   rgba(232, 230, 240, 0.65);
+  --text-muted:       rgba(232, 230, 240, 0.38);
+  --text-disabled:    rgba(232, 230, 240, 0.22);
+  --text-accent:      #cbb7fb;
+
+  --accent:           #cbb7fb;
+  --accent-dim:       #9b87d4;
+  --accent-faint:     rgba(203, 183, 251, 0.12);
+
+  --mysteria:         #1b1938;
+  --amethyst:         #714cb6;
+
+  --radius-sm:        8px;
+  --radius-md:        12px;
+  --radius-lg:        16px;
+
+  --font-sans:        'Geist', system-ui, -apple-system, sans-serif;
+  --font-mono:        'Geist Mono', 'JetBrains Mono', ui-monospace, monospace;
+
+  --row-height:       56px;
+  --sidebar-width:    220px;
+  --pane-split:       38%;
+}
+
+/* ─── Reset & base ────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Hide scrollbars but keep scrollable */
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.22); }
+
+/* ─── Window dragging (Electron hiddenInset title bar) ───────────────────── */
+/*
+ * With titleBarStyle:'hiddenInset' the native drag region is gone.
+ * Mark the sidebar and top bar as draggable, then opt every interactive
+ * element back out so clicks still land correctly.
+ */
+.sidebar,
+.topbar-drag-region {
+  -webkit-app-region: drag;
+}
+
+button, input, a, select, textarea,
+[contenteditable], [role="button"],
+[role="listbox"], [role="option"],
+.email-list-pane, .email-thread-pane {
+  -webkit-app-region: no-drag;
+}
+
+/* ─── Layout primitives ───────────────────────────────────────────────────── */
+.app-shell {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+}
+
+.sidebar {
+  width: var(--sidebar-width);
+  flex-shrink: 0;
+  height: 100%;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  position: relative;       /* anchor the absolute resize handle */
+  transition: width 120ms ease;
+}
+
+/* While the user is actively dragging the resize handle we kill the
+   width transition so the sidebar tracks the cursor 1:1. */
+.sidebar.resizing { transition: none; }
+
+/* Vertical drag handle pinned to the right edge */
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;              /* straddles the border for a 6px hit area */
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 30;
+  -webkit-app-region: no-drag;   /* never trigger window drag */
+}
+.sidebar-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0; bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: transparent;
+  transition: background 120ms ease;
+}
+.sidebar-resize-handle:hover::after,
+.sidebar.resizing .sidebar-resize-handle::after { background: var(--accent); }
+
+.main-area {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  overflow: hidden;
+}
+
+.email-list-pane {
+  width: var(--pane-split);
+  min-width: 280px;
+  max-width: 560px;
+  height: 100%;
+  border-right: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.email-thread-pane {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ─── Email row ───────────────────────────────────────────────────────────── */
+.email-row {
+  height: var(--row-height);
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  align-items: center;
+  padding: 0 12px;
+  cursor: pointer;
+  position: relative;
+  border-bottom: 1px solid var(--border-subtle);
+  transition: background 0.08s ease;
+  user-select: none;
+}
+
+.email-row:hover { background: var(--bg-hover); }
+.email-row.focused { background: var(--bg-active); }
+.email-row.selected { background: var(--bg-selected); }
+/* NOTE: do not toggle font-weight on .unread — it changes glyph widths in
+   non-variable Geist and causes the row content to reflow when read state
+   flips. Use color contrast + the accent bar (::before) below instead. */
+.email-row.unread::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 20px;
+  background: var(--accent);
+  border-radius: 0 2px 2px 0;
+}
+
+/* ─── Typography helpers ──────────────────────────────────────────────────── */
+.text-display { font-size: 28px; font-weight: 540; line-height: 1.14; letter-spacing: -0.63px; }
+.text-heading  { font-size: 20px; font-weight: 460; line-height: 1.20; }
+.text-body     { font-size: 14px; font-weight: 400; line-height: 1.50; }
+.text-caption  { font-size: 12px; font-weight: 500; line-height: 1.20; letter-spacing: -0.315px; }
+.text-label    { font-size: 11px; font-weight: 600; line-height: 1.20; letter-spacing: 0.06em; text-transform: uppercase; }
+
+/* ─── Shimmer skeleton ────────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255,255,255,0.04) 25%,
+    rgba(255,255,255,0.08) 50%,
+    rgba(255,255,255,0.04) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+  border-radius: 4px;
+}
+
+/* ─── Focus ring (keyboard) ───────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ─── Prose (email body) ──────────────────────────────────────────────────── */
+.email-prose {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  max-width: 72ch;
+}
+.email-prose a { color: var(--accent); text-decoration: underline; }
+.email-prose blockquote {
+  border-left: 3px solid var(--border-accent);
+  margin: 12px 0;
+  padding: 4px 0 4px 16px;
+  color: var(--text-secondary);
+}
+.email-prose pre, .email-prose code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  background: rgba(255,255,255,0.05);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.email-prose img { max-width: 100%; border-radius: var(--radius-sm); }
+
+/* ─── Compose editor ──────────────────────────────────────────────────────── */
+.compose-editor {
+  outline: none;
+  min-height: 200px;
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  caret-color: var(--accent);
+}
+.compose-editor[contenteditable=true]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* ─── Command palette ─────────────────────────────────────────────────────── */
+.command-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 100;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14vh;
+}
+
+.command-panel {
+  width: 640px;
+  max-width: calc(100vw - 32px);
+  background: var(--bg-overlay);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-command, 0 24px 80px rgba(0,0,0,0.7));
+  overflow: hidden;
+}
+
+/* ─── Kbd badge ───────────────────────────────────────────────────────────── */
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: rgba(255,255,255,0.07);
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  line-height: 1;
+}
