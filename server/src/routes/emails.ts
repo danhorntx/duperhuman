@@ -2,15 +2,17 @@ import type { FastifyInstance } from 'fastify'
 import { getAccount, syncFolder, getCachedEmails, invalidateCache, resolveImapFolder } from '../services/sync.js'
 import { addFlags, removeFlags, moveMessages, fetchAttachmentByUid, setLabels } from '../services/imap.js'
 import { sendEmail } from '../services/smtp.js'
+import { gmailModify, gmailTrash, gmailUntrash } from '../services/gmail.js'
 
 // Helper: parse "accountId:folder:uid" id
 function parseEmailId(id: string) {
   const parts = id.split(':')
   if (parts.length < 3) throw new Error(`Invalid email id: ${id}`)
-  const uid = parseInt(parts[parts.length - 1], 10)
+  const rawUid = parts[parts.length - 1]
+  const uid = parseInt(rawUid, 10)
   const folder = parts.slice(1, -1).join(':')
   const accountId = parts[0]
-  return { accountId, folder, uid }
+  return { accountId, folder, uid, rawUid }
 }
 
 // Gmail-specific folder map
@@ -85,7 +87,7 @@ export async function emailRoutes(app: FastifyInstance) {
     Params: { id: string; index: string }
     Querystring: { download?: string }
   }>('/emails/:id/attachments/:index', async (req, reply) => {
-    const { accountId, folder, uid } = parseEmailId(decodeURIComponent(req.params.id))
+	    const { accountId, folder, uid, rawUid } = parseEmailId(decodeURIComponent(req.params.id))
     const idx = parseInt(req.params.index, 10)
     if (Number.isNaN(idx)) return reply.status(400).send({ error: 'Bad index' })
 
@@ -115,12 +117,12 @@ export async function emailRoutes(app: FastifyInstance) {
 
   // Get single email
   app.get<{ Params: { id: string } }>('/emails/:id', async (req, reply) => {
-    const { accountId, folder, uid } = parseEmailId(decodeURIComponent(req.params.id))
+	    const { accountId, folder, uid, rawUid } = parseEmailId(decodeURIComponent(req.params.id))
     const account = getAccount(accountId)
     if (!account) return reply.status(404).send({ error: 'Account not found' })
 
     const cached = getCachedEmails(accountId, folder)
-    const email = cached.find(e => e.uid === uid)
+	    const email = cached.find(e => e.uid === uid || e.id.endsWith(`:${rawUid}`))
     if (!email) return reply.status(404).send({ error: 'Email not found' })
     return email
   })
@@ -161,10 +163,15 @@ export async function emailRoutes(app: FastifyInstance) {
   // Archive
   app.post<{ Body: { ids: string[] } }>('/emails/archive', async (req, reply) => {
     const failures = await runBulk(req.body.ids, async (id) => {
-      const { accountId, folder, uid } = parseEmailId(id)
-      const account = getAccount(accountId)
-      if (!account) throw new Error('Account not found')
-      // Gmail: remove \Inbox flag. Other providers: move to Archive folder
+	      const { accountId, folder, uid, rawUid } = parseEmailId(id)
+	      const account = getAccount(accountId)
+	      if (!account) throw new Error('Account not found')
+	      if (account.provider === 'gmail') {
+	        await gmailModify(account, [rawUid], [], ['INBOX'])
+	        invalidateCache(accountId, folder)
+	        return
+	      }
+	      // Gmail: remove \Inbox flag. Other providers: move to Archive folder
       if (isGmailHost(account.imapHost)) {
         await removeFlags(account, folder, [uid], ['\\Inbox'])
       } else {
@@ -178,10 +185,15 @@ export async function emailRoutes(app: FastifyInstance) {
   // Trash
   app.post<{ Body: { ids: string[] } }>('/emails/trash', async (req, reply) => {
     const failures = await runBulk(req.body.ids, async (id) => {
-      const { accountId, folder, uid } = parseEmailId(id)
-      const account = getAccount(accountId)
-      if (!account) throw new Error('Account not found')
-      await moveMessages(account, folder, [uid], trashFolder(account.imapHost))
+	      const { accountId, folder, uid, rawUid } = parseEmailId(id)
+	      const account = getAccount(accountId)
+	      if (!account) throw new Error('Account not found')
+	      if (account.provider === 'gmail') {
+	        await gmailTrash(account, [rawUid])
+	        invalidateCache(accountId, folder)
+	        return
+	      }
+	      await moveMessages(account, folder, [uid], trashFolder(account.imapHost))
       invalidateCache(accountId, folder)
     })
     return sendBulkResult(reply, failures)
@@ -190,10 +202,17 @@ export async function emailRoutes(app: FastifyInstance) {
   // Restore (from archive/trash)
   app.post<{ Body: { ids: string[] } }>('/emails/restore', async (req, reply) => {
     const failures = await runBulk(req.body.ids, async (id) => {
-      const { accountId, folder, uid } = parseEmailId(id)
-      const account = getAccount(accountId)
-      if (!account) throw new Error('Account not found')
-      if (isGmailHost(account.imapHost)) {
+	      const { accountId, folder, uid, rawUid } = parseEmailId(id)
+	      const account = getAccount(accountId)
+	      if (!account) throw new Error('Account not found')
+	      if (account.provider === 'gmail') {
+	        await gmailUntrash(account, [rawUid])
+	        await gmailModify(account, [rawUid], ['INBOX'], ['SPAM'])
+	        invalidateCache(accountId, folder)
+	        invalidateCache(accountId, 'INBOX')
+	        return
+	      }
+	      if (isGmailHost(account.imapHost)) {
         await setLabels(account, folder, [uid], ['\\Inbox'])
       } else {
         await moveMessages(account, folder, [uid], 'INBOX')
@@ -208,10 +227,15 @@ export async function emailRoutes(app: FastifyInstance) {
   app.post<{ Body: { ids: string[]; read: boolean } }>('/emails/read', async (req, reply) => {
     const { ids, read } = req.body
     const failures = await runBulk(ids, async (id) => {
-      const { accountId, folder, uid } = parseEmailId(id)
-      const account = getAccount(accountId)
-      if (!account) throw new Error('Account not found')
-      if (read) {
+	      const { accountId, folder, uid, rawUid } = parseEmailId(id)
+	      const account = getAccount(accountId)
+	      if (!account) throw new Error('Account not found')
+	      if (account.provider === 'gmail') {
+	        await gmailModify(account, [rawUid], read ? [] : ['UNREAD'], read ? ['UNREAD'] : [])
+	        invalidateCache(accountId, folder)
+	        return
+	      }
+	      if (read) {
         await addFlags(account, folder, [uid], ['\\Seen'])
       } else {
         await removeFlags(account, folder, [uid], ['\\Seen'])
@@ -225,10 +249,15 @@ export async function emailRoutes(app: FastifyInstance) {
   app.post<{ Body: { ids: string[]; starred: boolean } }>('/emails/star', async (req, reply) => {
     const { ids, starred } = req.body
     const failures = await runBulk(ids, async (id) => {
-      const { accountId, folder, uid } = parseEmailId(id)
-      const account = getAccount(accountId)
-      if (!account) throw new Error('Account not found')
-      if (starred) {
+	      const { accountId, folder, uid, rawUid } = parseEmailId(id)
+	      const account = getAccount(accountId)
+	      if (!account) throw new Error('Account not found')
+	      if (account.provider === 'gmail') {
+	        await gmailModify(account, [rawUid], starred ? ['STARRED'] : [], starred ? [] : ['STARRED'])
+	        invalidateCache(accountId, folder)
+	        return
+	      }
+	      if (starred) {
         await addFlags(account, folder, [uid], ['\\Flagged'])
       } else {
         await removeFlags(account, folder, [uid], ['\\Flagged'])
@@ -241,10 +270,15 @@ export async function emailRoutes(app: FastifyInstance) {
   // Spam
   app.post<{ Body: { ids: string[] } }>('/emails/spam', async (req, reply) => {
     const failures = await runBulk(req.body.ids, async (id) => {
-      const { accountId, folder, uid } = parseEmailId(id)
-      const account = getAccount(accountId)
-      if (!account) throw new Error('Account not found')
-      await moveMessages(account, folder, [uid], spamFolder(account.imapHost))
+	      const { accountId, folder, uid, rawUid } = parseEmailId(id)
+	      const account = getAccount(accountId)
+	      if (!account) throw new Error('Account not found')
+	      if (account.provider === 'gmail') {
+	        await gmailModify(account, [rawUid], ['SPAM'], ['INBOX'])
+	        invalidateCache(accountId, folder)
+	        return
+	      }
+	      await moveMessages(account, folder, [uid], spamFolder(account.imapHost))
       invalidateCache(accountId, folder)
     })
     return sendBulkResult(reply, failures)

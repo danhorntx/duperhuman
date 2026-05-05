@@ -84,6 +84,7 @@ export interface Account {
   id: string
   name: string
   email: string
+  provider?: 'imap' | 'gmail'
   imapHost: string
   imapPort: number
   imapTls: boolean
@@ -91,6 +92,7 @@ export interface Account {
   smtpPort: number
   smtpSecure: boolean
   username: string
+  gmailHistoryId?: string
   // password never stored client-side; only in server .env / config
   isActive: boolean
   syncState: AccountSyncState

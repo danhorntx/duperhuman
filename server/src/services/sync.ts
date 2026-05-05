@@ -1,4 +1,5 @@
 import { fetchEmails, type ImapAccount } from './imap.js'
+import { fetchGmailEmails } from './gmail.js'
 
 // ─── Folder name normalisation ────────────────────────────────────────────────
 // Gmail uses [Gmail]/… prefixes; other providers use bare names.
@@ -43,6 +44,7 @@ function enqueue<T>(accountId: string, fn: () => Promise<T>): Promise<T> {
 // For production, persist to a SQLite/encrypted file. For now, memory + env.
 
 export interface StoredAccount extends ImapAccount {
+  provider?: 'imap' | 'gmail'
   name: string
   email: string
   smtpHost: string
@@ -50,6 +52,10 @@ export interface StoredAccount extends ImapAccount {
   smtpSecure: boolean
   isActive: boolean
   lastSync: number
+  oauthRefreshToken?: string
+  gmailAccessToken?: string
+  gmailAccessTokenExpiresAt?: number
+  gmailHistoryId?: string
 }
 
 const accountStore = new Map<string, StoredAccount>()
@@ -98,6 +104,21 @@ export async function syncFolder(
 
   if (!forceRefresh && cached && now - cached.fetchedAt < CACHE_TTL) {
     return cached.emails
+  }
+
+  if (account.provider === 'gmail') {
+    return enqueue(accountId, async () => {
+      const raw = await fetchGmailEmails(account, folder, limit, offset)
+      const emails = raw.map(e => ({
+        ...e,
+        folder,
+        id: `${accountId}:${folder}:${'gmailMessageId' in e ? e.gmailMessageId : e.uid}`,
+      }))
+      folderCache.set(cacheKey, { emails, fetchedAt: Date.now() })
+      account.lastSync = Date.now()
+      account.gmailHistoryId = raw[0]?.gmailHistoryId ?? account.gmailHistoryId
+      return emails
+    })
   }
 
   // Translate logical folder name → real IMAP mailbox name, serialise per account

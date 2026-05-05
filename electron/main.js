@@ -130,9 +130,10 @@ function startServer() {
   serverProcess = utilityProcess.fork(serverPath, [], {
     env: {
       ...process.env,
-      PORT:     '3001',
-      NODE_ENV: 'production',
-    },
+	      PORT:     '3001',
+	      NODE_ENV: 'production',
+	      DUPERHUMAN_USER_DATA: app.getPath('userData'),
+	    },
     stdio: 'pipe',
   })
   serverProcess.stdout?.on('data', d => console.log('[server]', d.toString().trim()))

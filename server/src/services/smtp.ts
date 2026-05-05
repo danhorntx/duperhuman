@@ -2,9 +2,11 @@ import nodemailer from 'nodemailer'
 import type Mail from 'nodemailer/lib/mailer/index.js'
 import SMTPTransport from 'nodemailer/lib/smtp-transport/index.js'
 import { config } from '../lib/config.js'
+import { gmailSend } from './gmail.js'
 
 export interface SmtpAccount {
   id: string
+  provider?: 'imap' | 'gmail'
   name: string
   email: string
   username: string
@@ -62,6 +64,9 @@ function getTransport(account: SmtpAccount): nodemailer.Transporter {
 }
 
 export async function sendEmail(account: SmtpAccount, opts: SendOptions): Promise<string> {
+  if (account.provider === 'gmail') {
+    return gmailSend(account as Parameters<typeof gmailSend>[0], opts)
+  }
   const transport = getTransport(account)
 
   const mailOptions: Mail.Options = {

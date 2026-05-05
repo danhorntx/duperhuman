@@ -6,6 +6,7 @@ import { accountRoutes } from './routes/accounts.js'
 import { emailRoutes } from './routes/emails.js'
 import { searchRoutes } from './routes/search.js'
 import { registerAccount, startBackgroundSync } from './services/sync.js'
+import { loadPersistedGmailAccounts } from './services/gmail.js'
 
 const app = Fastify({
   // Pino's default async writer uses thread-stream → a worker thread whose
@@ -75,6 +76,11 @@ if (config.defaultAccount) {
     lastSync: 0,
   })
   app.log.info(`Default account registered: ${d.email}`)
+}
+
+for (const account of loadPersistedGmailAccounts()) {
+  registerAccount(account)
+  app.log.info(`Persisted Gmail account registered: ${account.email}`)
 }
 
 // ─── Start background sync ────────────────────────────────────────────────────

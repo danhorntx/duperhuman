@@ -7,6 +7,12 @@ export const config = {
   syncIntervalMs: parseInt(process.env.SYNC_INTERVAL_MS ?? '30000', 10),
   initialSyncLimit: parseInt(process.env.INITIAL_SYNC_LIMIT ?? '200', 10),
   allowInsecureTls: process.env.ALLOW_INSECURE_MAIL_TLS === 'true',
+  googleOAuth: {
+    clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+    redirectUri: process.env.GOOGLE_REDIRECT_URI ?? `http://127.0.0.1:${process.env.PORT ?? '3001'}/api/auth/google/callback`,
+  },
+  userDataDir: process.env.DUPERHUMAN_USER_DATA ?? process.cwd(),
 
   // Default account from env (can also be configured via API)
   defaultAccount: process.env.IMAP_USER

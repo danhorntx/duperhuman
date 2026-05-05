@@ -34,19 +34,47 @@ function SetupScreen({ onSetup }: { onSetup: (account: Account, password: string
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setLoading(true)
-    setError('')
+	  const submit = async (e: React.FormEvent) => {
+	    e.preventDefault()
+	    setLoading(true)
+	    setError('')
     try {
       const account = await accountsApi.create({ ...form, username: form.email })
       onSetup(account, form.password)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Connection failed. Check your credentials.')
-    } finally {
-      setLoading(false)
-    }
-  }
+	    } finally {
+	      setLoading(false)
+	    }
+	  }
+
+	  const connectGmail = async () => {
+	    setLoading(true)
+	    setError('')
+	    const before = new Set((await accountsApi.list().catch(() => [])).map(a => a.id))
+	    window.open(accountsApi.googleAuthUrl(), '_blank', 'width=520,height=720')
+	    const started = Date.now()
+	    const poll = window.setInterval(async () => {
+	      try {
+	        const accounts = await accountsApi.list()
+	        const account = accounts.find(a => a.provider === 'gmail' && !before.has(a.id))
+	          ?? accounts.find(a => a.provider === 'gmail')
+	        if (account) {
+	          window.clearInterval(poll)
+	          setLoading(false)
+	          onSetup(account, '')
+	        } else if (Date.now() - started > 120_000) {
+	          window.clearInterval(poll)
+	          setLoading(false)
+	          setError('Google sign-in timed out. Try again.')
+	        }
+	      } catch (err) {
+	        window.clearInterval(poll)
+	        setLoading(false)
+	        setError(err instanceof Error ? err.message : 'Google sign-in failed.')
+	      }
+	    }, 1500)
+	  }
 
   const presets: Record<string, Partial<typeof form>> = {
     Gmail:    { imapHost: 'imap.gmail.com',        imapPort: 993, imapTls: true, smtpHost: 'smtp.gmail.com',        smtpPort: 587, smtpSecure: false },
@@ -79,7 +107,24 @@ function SetupScreen({ onSetup }: { onSetup: (account: Account, password: string
           </p>
         </div>
 
-        <form onSubmit={submit} className="px-8 py-6 space-y-4">
+	        <div className="px-8 pt-6">
+	          <button
+	            type="button"
+	            onClick={connectGmail}
+	            disabled={loading}
+	            className="w-full py-2.5 rounded-xl text-sm font-semibold transition-all duration-100 disabled:opacity-50"
+	            style={{ background: 'var(--accent)', color: '#1a0617' }}
+	          >
+	            Connect Gmail with Google
+	          </button>
+	          <div className="flex items-center gap-3 my-5">
+	            <div className="h-px flex-1" style={{ background: 'var(--border-subtle)' }} />
+	            <span className="text-[10px] text-[var(--text-muted)] uppercase tracking-widest">or IMAP</span>
+	            <div className="h-px flex-1" style={{ background: 'var(--border-subtle)' }} />
+	          </div>
+	        </div>
+
+	        <form onSubmit={submit} className="px-8 pb-6 space-y-4">
           {/* Provider presets */}
           <div>
             <label className="text-label text-[var(--text-muted)] block mb-2">Provider</label>
