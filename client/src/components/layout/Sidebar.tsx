@@ -7,6 +7,7 @@ import {
 import { useEmailStore, selectActiveState } from '@/store/emailStore'
 import { useUiStore, SIDEBAR_LIMITS } from '@/store/uiStore'
 import { useLabelsStore } from '@/store/labelsStore'
+import { DuperhumanLogoMark } from '@/components/ui/DuperhumanLogo'
 import { avatarColor, initials } from '@/lib/utils'
 import type { ActiveFolder } from '@/types/email'
 
@@ -371,18 +372,15 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
 
       {/* ── Brand / identity ──────────────────────────────────────────────── */}
       <div className="flex items-center gap-2.5 px-4 py-3 border-b" style={{ borderColor: 'var(--border-subtle)' }}>
-        <div
-          className="w-6 h-6 rounded-md flex items-center justify-center flex-shrink-0"
-          style={{ background: 'var(--mysteria)', border: '1px solid var(--border-accent)' }}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-            <path d="M17.5 1L7.5 13h5l-1 10 10-12h-5l1-10z"
-              fill="var(--accent)" stroke="var(--accent)" strokeWidth="0.5" strokeLinejoin="round" />
-          </svg>
-        </div>
+        <DuperhumanLogoMark
+          size={24}
+          iconSize={12}
+          className="rounded-md flex-shrink-0"
+          style={{ background: 'var(--mysteria)' }}
+        />
         <div className="flex-1 min-w-0">
           <div className="text-sm font-semibold text-[var(--text-primary)] truncate" style={{ letterSpacing: '-0.02em' }}>
-            {accounts.find(a => a.id === activeAccountId)?.name ?? 'Superhuman'}
+            {accounts.find(a => a.id === activeAccountId)?.name ?? 'Duperhuman'}
           </div>
           <div className="text-[10px] text-[var(--text-muted)] truncate leading-tight">
             {accounts.find(a => a.id === activeAccountId)?.email ?? ''}

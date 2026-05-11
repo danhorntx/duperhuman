@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ArrowClockwiseIcon, CaretDownIcon } from '@phosphor-icons/react'
 import { useEmailStore, selectActiveState } from '@/store/emailStore'
 import { useUiStore } from '@/store/uiStore'
+import { DuperhumanLogoMark } from '@/components/ui/DuperhumanLogo'
 import { useVirtualList } from '@/hooks/useVirtualList'
 import { EmailRow } from './EmailRow'
 import type { ActiveFolder } from '@/types/email'
@@ -34,15 +35,7 @@ function EmptyState({ folder }: { folder: unknown }) {
   const label = isLabel ? 'this label' : (folder === 'INBOX' ? 'INBOX' : String(folder))
   return (
     <div className="flex flex-col items-center justify-center h-full py-20 gap-4">
-      <div
-        className="w-16 h-16 rounded-2xl flex items-center justify-center"
-        style={{ background: 'var(--accent-faint)', border: '1px solid var(--border-accent)' }}
-      >
-        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-          <path d="M17.5 1L7.5 13h5l-1 10 10-12h-5l1-10z"
-            fill="var(--accent)" stroke="var(--accent)" strokeWidth="0.5" strokeLinejoin="round" />
-        </svg>
-      </div>
+      <DuperhumanLogoMark size={64} iconSize={28} />
       <div className="text-center">
         <p className="text-sm font-medium text-[var(--text-primary)] mb-1">
           {folder === 'INBOX' ? 'Inbox zero' : `No emails in ${label}`}

@@ -3,6 +3,7 @@ import { AppLayout }    from '@/components/layout/AppLayout'
 import { useGlobalKeyboard } from '@/hooks/useKeyboard'
 import { useEmailStore } from '@/store/emailStore'
 import { useUiStore } from '@/store/uiStore'
+import { DuperhumanLogoMark } from '@/components/ui/DuperhumanLogo'
 import { accounts as accountsApi, type GoogleOAuthStatus } from '@/lib/api'
 import { processOutbox } from '@/lib/outbox'
 import { processMailMutations } from '@/lib/mailMutations'
@@ -158,12 +159,9 @@ function SetupScreen({ onSetup }: { onSetup: (account: Account, password: string
         <div className="px-8 py-8 text-center"
           style={{ background: 'linear-gradient(135deg, #1b1938 0%, #13121f 100%)' }}
         >
-          <div className="w-12 h-12 rounded-2xl flex items-center justify-center mx-auto mb-4"
-            style={{ background: 'var(--accent-faint)', border: '1px solid var(--border-accent)', color: 'var(--accent)' }}
-          >
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
-              <path d="M17.5 1L7.5 13h5l-1 10 10-12h-5l1-10z" fill="currentColor" stroke="currentColor" strokeWidth="0.5" strokeLinejoin="round" />
-            </svg>
+          <DuperhumanLogoMark size={52} iconSize={25} className="mx-auto mb-3" />
+          <div className="text-[10px] font-semibold uppercase tracking-[0.24em] text-[var(--accent)] mb-2">
+            Duperhuman
           </div>
           <h1 className="text-xl font-bold text-[var(--text-primary)]" style={{ letterSpacing: '-0.03em' }}>
             Connect your email
@@ -429,13 +427,7 @@ export default function App() {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: 'var(--bg-base)' }}>
         <div className="flex flex-col items-center gap-3">
-          <div className="w-10 h-10 rounded-xl flex items-center justify-center"
-            style={{ background: 'var(--accent-faint)', border: '1px solid var(--border-accent)', color: 'var(--accent)' }}
-          >
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
-              <path d="M17.5 1L7.5 13h5l-1 10 10-12h-5l1-10z" fill="currentColor" stroke="currentColor" strokeWidth="0.5" strokeLinejoin="round" />
-            </svg>
-          </div>
+          <DuperhumanLogoMark size={40} iconSize={18} className="rounded-xl" />
           <p className="text-xs text-[var(--text-muted)]">Loading…</p>
         </div>
       </div>

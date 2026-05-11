@@ -61,6 +61,7 @@
       "writeUpdateInfo": false
     },
     "mac": {
+      "icon": "build-resources/icon.icns",
       "target": [
         { "target": "dmg", "arch": ["arm64", "x64"] }
       ],

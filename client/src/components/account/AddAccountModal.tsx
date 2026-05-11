@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { XIcon } from '@phosphor-icons/react'
 import { accounts as accountsApi, type GoogleOAuthStatus } from '@/lib/api'
 import { useEmailStore } from '@/store/emailStore'
+import { DuperhumanLogoMark } from '@/components/ui/DuperhumanLogo'
 import { db } from '@/db/db'
 import type { Account } from '@/types/email'
 
@@ -172,14 +173,7 @@ export function AddAccountModal({ onClose }: Props) {
             style={{ background: 'linear-gradient(135deg, #1b1938 0%, #13121f 100%)', borderBottom: '1px solid var(--border-subtle)' }}
           >
             <div className="flex items-center gap-3">
-              <div
-                className="w-8 h-8 rounded-xl flex items-center justify-center"
-                style={{ background: 'var(--accent-faint)', border: '1px solid var(--border-accent)', color: 'var(--accent)' }}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-                  <path d="M17.5 1L7.5 13h5l-1 10 10-12h-5l1-10z" fill="currentColor" stroke="currentColor" strokeWidth="0.5" strokeLinejoin="round" />
-                </svg>
-              </div>
+              <DuperhumanLogoMark size={32} iconSize={14} className="rounded-xl" />
               <div>
                 <h2 className="text-sm font-semibold text-[var(--text-primary)]" style={{ letterSpacing: '-0.02em' }}>
                   Add another account
