@@ -20,6 +20,11 @@ interface GmailMessageList {
   nextPageToken?: string
 }
 
+interface GmailDraftList {
+  drafts?: { id: string; message?: { id: string; threadId: string } }[]
+  nextPageToken?: string
+}
+
 interface GmailMessage {
   id: string
   threadId: string
@@ -187,11 +192,49 @@ export async function gmailSend(account: StoredAccount, opts: {
   return data.id
 }
 
+export async function gmailSendDraft(account: StoredAccount, draftMessageId: string, opts: Parameters<typeof gmailSend>[1]): Promise<string> {
+  const draftId = await findDraftIdByMessageId(account, draftMessageId)
+  if (!draftId) return gmailSend(account, opts)
+
+  const raw = buildMime(account, opts)
+  await gmailFetch(account, `/drafts/${draftId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ id: draftId, message: { raw } }),
+  })
+
+  const data = await gmailFetch<{ id: string }>(account, '/drafts/send', {
+    method: 'POST',
+    body: JSON.stringify({ id: draftId }),
+  })
+  return data.id
+}
+
+export async function gmailDeleteDraftByMessageId(account: StoredAccount, draftMessageId: string): Promise<boolean> {
+  const draftId = await findDraftIdByMessageId(account, draftMessageId)
+  if (!draftId) return false
+  await gmailFetch(account, `/drafts/${draftId}`, { method: 'DELETE' })
+  return true
+}
+
 export async function gmailModify(account: StoredAccount, ids: string[], addLabelIds: string[] = [], removeLabelIds: string[] = []) {
   await gmailFetch(account, '/messages/batchModify', {
     method: 'POST',
     body: JSON.stringify({ ids, addLabelIds, removeLabelIds }),
   })
+}
+
+async function findDraftIdByMessageId(account: StoredAccount, messageId: string): Promise<string | null> {
+  let pageToken: string | undefined
+  do {
+    const qs = new URLSearchParams()
+    if (pageToken) qs.set('pageToken', pageToken)
+    const suffix = qs.toString() ? `?${qs}` : ''
+    const data = await gmailFetch<GmailDraftList>(account, `/drafts${suffix}`)
+    const match = (data.drafts ?? []).find(draft => draft.message?.id === messageId)
+    if (match) return match.id
+    pageToken = data.nextPageToken
+  } while (pageToken)
+  return null
 }
 
 export async function gmailTrash(account: StoredAccount, ids: string[]) {
@@ -240,7 +283,10 @@ function toEmail(account: StoredAccount, m: GmailMessage, folder: string, index:
     bodyHtml,
     bodyText,
     attachments,
-    labels: labelIds.filter(l => !isSystemLabel(l)),
+    // Gmail label ids are provider-specific remote metadata, not Duperhuman
+    // custom label ids. Keep them out of the local label array so the UI only
+    // renders labels the user created and can edit/remove in the app.
+    labels: [],
     flags: {
       seen: !labelIds.includes('UNREAD'),
       answered: false,

@@ -104,6 +104,7 @@ interface EmailStore {
 
   archiveEmail: (id?: string) => Promise<void>
   deleteEmail:  (id?: string) => Promise<void>
+  restoreEmail: (id?: string) => Promise<void>
   starEmail:    (id?: string) => Promise<void>
   markRead:     (id: string, read: boolean) => Promise<void>
   markUnread:   (id?: string) => Promise<void>
@@ -243,7 +244,7 @@ async function mergeServerEmails(serverEmails: Email[]): Promise<Email[]> {
       bodyHtml: raw.bodyHtml || prior.bodyHtml,
       bodyText: raw.bodyText || prior.bodyText,
       attachments: raw.attachments.length > 0 ? raw.attachments : prior.attachments,
-	      labels: Array.from(new Set([...(raw.labels ?? []), ...(prior.labels ?? [])])),
+	      labels: mergeKnownLabels(raw.labels, prior.labels),
       isArchived: prior.isArchived || raw.isArchived,
       isTrashed: prior.isTrashed || raw.isTrashed,
       isSpam: prior.isSpam || raw.isSpam,
@@ -252,6 +253,14 @@ async function mergeServerEmails(serverEmails: Email[]): Promise<Email[]> {
       isRead: raw.isRead || prior.isRead,
     }
   })
+}
+
+function mergeKnownLabels(...labelSets: (string[] | undefined)[]): string[] {
+  const knownLabels = useLabelsStore.getState().labels
+  const merged = Array.from(new Set(labelSets.flatMap(labels => labels ?? [])))
+  if (knownLabels.length === 0) return merged
+  const validIds = new Set(knownLabels.map(label => label.id))
+  return merged.filter(id => validIds.has(id))
 }
 
 async function resolvePreloadFolders(accountId: string): Promise<MailFolderInfo[]> {
@@ -481,8 +490,10 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           bodyHtml: tagged.bodyHtml || prior.bodyHtml,
           bodyText: tagged.bodyText || prior.bodyText,
           attachments: tagged.attachments.length > 0 ? tagged.attachments : prior.attachments,
-	          // Union of auto-tagged labels and any user-applied labels
-          labels: Array.from(new Set([...(tagged.labels ?? []), ...(prior.labels ?? [])])),
+	          // Union of auto-tagged labels and any user-applied labels.
+          // Filter to known local label ids so provider-native Gmail label ids
+          // never render as orphan chips.
+          labels: mergeKnownLabels(tagged.labels, prior.labels),
           // Sticky client-side flags (server fetch never resets them)
           isArchived:   prior.isArchived || tagged.isArchived,
           isTrashed:    prior.isTrashed  || tagged.isTrashed,
@@ -701,7 +712,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
           bodyHtml: t.bodyHtml || prior.bodyHtml,
           bodyText: t.bodyText || prior.bodyText,
           attachments: t.attachments.length > 0 ? t.attachments : prior.attachments,
-	          labels:       Array.from(new Set([...(t.labels ?? []), ...(prior.labels ?? [])])),
+	          labels:       mergeKnownLabels(t.labels, prior.labels),
           isArchived:   prior.isArchived || t.isArchived,
           isTrashed:    prior.isTrashed  || t.isTrashed,
           isSpam:       prior.isSpam     || t.isSpam,
@@ -812,6 +823,10 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
     const { emails, focusedIndex } = getAS(get())
     const email = emails[focusedIndex]
     if (!email) return
+    if (email.isDraft || folderLooksLike(email.folder, 'draft')) {
+      useUiStore.getState().openCompose({ draftId: email.id })
+      return
+    }
     set(s => ({ accountStates: patchAS(s, { selectedId: email.id }) }))
     if (!email.isRead) get().markRead(email.id, true)
   },
@@ -883,6 +898,36 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
 	      console.error(err)
 	    }
 	  },
+
+  restoreEmail: async (id) => {
+    const { emails, selectedId, focusedIndex } = getAS(get())
+    const targetId = id ?? selectedId ?? emails[focusedIndex]?.id
+    const target = emails.find(e => e.id === targetId)
+    if (!target) return
+
+    const updated = emails.filter(e => e.id !== targetId)
+    const newIndex = Math.min(focusedIndex, updated.length - 1)
+    set(s => ({ accountStates: patchAS(s, {
+      emails: updated,
+      focusedIndex: newIndex,
+      selectedId: updated[newIndex]?.id ?? null,
+    }) }))
+
+    await db.emails.update(targetId!, {
+      folder: 'INBOX',
+      isArchived: false,
+      isTrashed: false,
+      isSpam: false,
+      snoozedUntil: undefined,
+    })
+    try {
+      await emailsApi.restore([targetId!])
+    } catch (err) {
+      await queueMailMutation({ accountId: target.accountId, type: 'restore', ids: [targetId!] })
+      useUiStore.getState().toast('Move to inbox queued until the server is reachable')
+      console.error(err)
+    }
+  },
 
   undoLast: async () => {
     const { emails, pendingArchive, pendingDelete } = getAS(get())

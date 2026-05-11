@@ -113,6 +113,7 @@ export interface Draft {
   accountId: string
   replyToId?: string    // email being replied to
   forwardOfId?: string  // email being forwarded
+  draftSourceId?: string // remote draft message being edited, when present
   to: EmailAddress[]
   cc: EmailAddress[]
   bcc: EmailAddress[]
@@ -134,6 +135,7 @@ export interface OutboxEmail {
   bodyText: string
   replyToId?: string
   forwardOfId?: string
+  draftSourceId?: string
   sendAt: number
   createdAt: number
   status: 'queued' | 'sending' | 'failed'
@@ -280,6 +282,7 @@ export interface SendEmailPayload {
   bodyText: string
   replyToId?: string
   forwardOfId?: string
+  draftSourceId?: string
   scheduledAt?: number
 }
 

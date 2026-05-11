@@ -28,8 +28,9 @@ export const useLabelsStore = create<LabelsStore>((set, get) => ({
 
   load: async () => {
     set({ isLoading: true })
-	    const labels = await db.labels.toArray()
-	    set({ labels: sortLabels(labels), isLoading: false })
+	    const labels = sortLabels(await db.labels.toArray())
+    await scrubUnknownEmailLabels(labels)
+	    set({ labels, isLoading: false })
   },
 
   create: async (input) => {
@@ -126,6 +127,22 @@ export const useLabelsStore = create<LabelsStore>((set, get) => ({
     return { ...email, labels: merged }
   },
 }))
+
+let lastScrubKey: string | null = null
+
+async function scrubUnknownEmailLabels(labels: CustomLabel[]) {
+  const key = labels.map(label => label.id).sort().join('|')
+  if (key === lastScrubKey) return
+  const validIds = new Set(labels.map(label => label.id))
+  await db.emails.toCollection().modify((email: Email) => {
+    if (!Array.isArray(email.labels)) {
+      email.labels = []
+      return
+    }
+    email.labels = email.labels.filter(id => validIds.has(id))
+  })
+  lastScrubKey = key
+}
 
 function sortLabels(labels: CustomLabel[]) {
   return [...labels].sort((a, b) => {

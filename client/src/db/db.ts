@@ -116,6 +116,21 @@ class SuperhumanDB extends Dexie {
       ].join(','),
       mailMutations: 'id, accountId, type, status, updatedAt',
     })
+
+    // v7 — remove provider-native label ids that were previously cached in
+    // Email.labels. Duperhuman labels are local CustomLabel ids; anything else
+    // renders as an orphan chip the user cannot edit.
+    this.version(7).stores({}).upgrade(async tx => {
+      const labels = await tx.table('labels').toArray() as CustomLabel[]
+      const validIds = new Set(labels.map(label => label.id))
+      await tx.table('emails').toCollection().modify((email: Email) => {
+        if (!Array.isArray(email.labels)) {
+          email.labels = []
+          return
+        }
+        email.labels = email.labels.filter(id => validIds.has(id))
+      })
+    })
   }
 }
 

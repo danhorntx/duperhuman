@@ -5,6 +5,7 @@ import {
   ArchiveIcon, TrashIcon, StarIcon, ClockIcon, TrayIcon,
   EnvelopeIcon, ArrowBendDoubleUpLeftIcon, ArrowBendUpRightIcon,
   ArrowUpIcon, FolderIcon, UserIcon, TagIcon, FunnelIcon,
+  PencilSimpleIcon,
 } from '@phosphor-icons/react'
 import { INBOX_SPLITS, useEmailStore, selectActiveState } from '@/store/emailStore'
 import { useUiStore } from '@/store/uiStore'
@@ -34,13 +35,27 @@ function useCommands(): Command[] {
   const accounts = useEmailStore(s => s.accounts)
   const ui = useUiStore()
   const selectedEmail = emails.find(e => e.id === selectedId) ?? null
+  const isDraft = !!selectedEmail && (selectedEmail.isDraft || selectedEmail.folder.toLowerCase().includes('draft'))
+  const canMoveToInbox = !!selectedEmail && (
+    selectedEmail.isArchived ||
+    selectedEmail.isTrashed ||
+    selectedEmail.isSpam ||
+    (selectedEmail.snoozedUntil ?? 0) > 0 ||
+    selectedEmail.folder.toLowerCase().includes('trash') ||
+    selectedEmail.folder.toLowerCase().includes('spam')
+  )
 
   const commands: Command[] = [
     { id: 'compose', label: 'Compose new email', icon: <EnvelopeIcon size={15} />, shortcut: 'C', category: 'compose', run: () => ui.openCompose() },
-    { id: 'reply',     label: 'Reply',       icon: <ArrowBendUpLeftIcon size={15} />,       shortcut: 'R', category: 'compose', run: () => selectedId && ui.openCompose({ replyToId: selectedId }) },
-    { id: 'reply-all', label: 'Reply all',   icon: <ArrowBendDoubleUpLeftIcon size={15} />, shortcut: 'A', category: 'compose', run: () => selectedId && ui.openCompose({ replyToId: selectedId, replyAll: true }) },
-    { id: 'forward',   label: 'Forward',     icon: <ArrowBendUpRightIcon size={15} />,      shortcut: 'F', category: 'compose', run: () => selectedId && ui.openCompose({ forwardId: selectedId }) },
-    { id: 'archive',   label: 'Archive',     icon: <ArchiveIcon size={15} />,               shortcut: 'E', category: 'action',  run: () => { store.archiveEmail(); ui.toast('Archived', { action: { label: 'Undo', fn: () => store.undoLast() } }) } },
+    ...(isDraft
+      ? [{ id: 'edit-draft', label: 'Edit draft', icon: <PencilSimpleIcon size={15} />, shortcut: 'Enter', category: 'compose' as const, run: () => selectedId && ui.openCompose({ draftId: selectedId }) }]
+      : [
+          { id: 'reply',     label: 'Reply',       icon: <ArrowBendUpLeftIcon size={15} />,       shortcut: 'R', category: 'compose' as const, run: () => selectedId && ui.openCompose({ replyToId: selectedId }) },
+          { id: 'reply-all', label: 'Reply all',   icon: <ArrowBendDoubleUpLeftIcon size={15} />, shortcut: 'A', category: 'compose' as const, run: () => selectedId && ui.openCompose({ replyToId: selectedId, replyAll: true }) },
+          { id: 'forward',   label: 'Forward',     icon: <ArrowBendUpRightIcon size={15} />,      shortcut: 'F', category: 'compose' as const, run: () => selectedId && ui.openCompose({ forwardId: selectedId }) },
+        ]),
+    ...(!isDraft ? [{ id: 'archive', label: 'Archive', icon: <ArchiveIcon size={15} />, shortcut: 'E', category: 'action' as const, run: () => { store.archiveEmail(); ui.toast('Archived', { action: { label: 'Undo', fn: () => store.undoLast() } }) } }] : []),
+    ...(canMoveToInbox ? [{ id: 'move-inbox', label: 'Move to Inbox', icon: <TrayIcon size={15} />, shortcut: '', category: 'action' as const, run: () => { store.restoreEmail(); ui.toast('Moved to inbox') } }] : []),
     { id: 'delete',    label: 'Delete',      icon: <TrashIcon size={15} />,                 shortcut: '#', category: 'action',  run: () => { store.deleteEmail(); ui.toast('Deleted', { action: { label: 'Undo', fn: () => store.undoLast() } }) } },
     { id: 'star',      label: 'Star / Unstar', icon: <StarIcon size={15} />,                shortcut: 'S', category: 'action',  run: () => store.starEmail() },
     { id: 'snooze',    label: 'Snooze',      icon: <ClockIcon size={15} />,                 shortcut: 'H', category: 'action',  run: () => ui.openSnoozeModal() },

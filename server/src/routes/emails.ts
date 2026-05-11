@@ -2,7 +2,13 @@ import type { FastifyInstance } from 'fastify'
 import { getAccount, syncFolder, getCachedEmails, invalidateCache, resolveImapFolder } from '../services/sync.js'
 import { addFlags, removeFlags, moveMessages, fetchAttachmentByUid, fetchEmailByUid, setLabels } from '../services/imap.js'
 import { sendEmail } from '../services/smtp.js'
-import { gmailModify, gmailTrash, gmailUntrash } from '../services/gmail.js'
+import {
+  gmailDeleteDraftByMessageId,
+  gmailModify,
+  gmailSendDraft,
+  gmailTrash,
+  gmailUntrash,
+} from '../services/gmail.js'
 
 // Helper: parse "accountId:folder:uid" id
 function parseEmailId(id: string) {
@@ -170,6 +176,7 @@ export async function emailRoutes(app: FastifyInstance) {
       bodyHtml: string
       bodyText: string
       replyToId?: string
+      draftSourceId?: string
       scheduledAt?: number
     }
   }>('/emails/send', async (req, reply) => {
@@ -182,12 +189,18 @@ export async function emailRoutes(app: FastifyInstance) {
       return { messageId: `scheduled:${req.body.scheduledAt}` }
     }
 
-    const messageId = await sendEmail(account, {
+    const sendOptions = {
       to, cc, bcc, subject,
       html: bodyHtml,
       text: bodyText,
-    })
+    }
 
+    const messageId =
+      account.provider === 'gmail' && req.body.draftSourceId
+        ? await gmailSendDraft(account, parseEmailId(req.body.draftSourceId).rawUid, sendOptions)
+        : await sendEmail(account, sendOptions)
+
+    if (req.body.draftSourceId) invalidateCache(accountId, 'Drafts')
     invalidateCache(accountId, 'Sent')
     return { messageId }
   })
@@ -221,7 +234,11 @@ export async function emailRoutes(app: FastifyInstance) {
 	      const account = getAccount(accountId)
 	      if (!account) throw new Error('Account not found')
 	      if (account.provider === 'gmail') {
-	        await gmailTrash(account, [rawUid])
+	        if (folder.toLowerCase().includes('draft')) {
+	          await gmailDeleteDraftByMessageId(account, rawUid)
+	        } else {
+	          await gmailTrash(account, [rawUid])
+	        }
 	        invalidateCache(accountId, folder)
 	        return
 	      }
@@ -238,8 +255,11 @@ export async function emailRoutes(app: FastifyInstance) {
 	      const account = getAccount(accountId)
 	      if (!account) throw new Error('Account not found')
 	      if (account.provider === 'gmail') {
-	        await gmailUntrash(account, [rawUid])
-	        await gmailModify(account, [rawUid], ['INBOX'], ['SPAM'])
+	        const lowerFolder = folder.toLowerCase()
+	        if (lowerFolder.includes('trash') || lowerFolder.includes('deleted')) {
+	          await gmailUntrash(account, [rawUid])
+	        }
+	        await gmailModify(account, [rawUid], ['INBOX'], lowerFolder.includes('spam') ? ['SPAM'] : [])
 	        invalidateCache(accountId, folder)
 	        invalidateCache(accountId, 'INBOX')
 	        return

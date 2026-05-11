@@ -43,8 +43,12 @@ function moveListBy(store: ReturnType<typeof useEmailStore.getState>, count: num
 
 export function useGlobalKeyboard() {
   const store = useEmailStore()
-  // selectedId lives inside per-account state — pull it via selector
-  const selectedId = useEmailStore(s => s.accountStates[s.activeAccountId ?? '']?.selectedId ?? null)
+  // Selected email lives inside per-account state — pull it via selector.
+  const selectedEmail = useEmailStore(s => {
+    const state = s.accountStates[s.activeAccountId ?? '']
+    return state?.emails.find(email => email.id === state.selectedId) ?? null
+  })
+  const selectedId = selectedEmail?.id ?? null
   const ui = useUiStore()
 
   const handler = useCallback((e: KeyboardEvent) => {
@@ -123,8 +127,21 @@ export function useGlobalKeyboard() {
       // Actions
       case 'e': {
         e.preventDefault()
-        store.archiveEmail()
-        ui.toast('Archived', { action: { label: 'Undo', fn: () => store.undoLast() } })
+        const canMoveToInbox = !!selectedEmail && (
+          selectedEmail.isArchived ||
+          selectedEmail.isTrashed ||
+          selectedEmail.isSpam ||
+          (selectedEmail.snoozedUntil ?? 0) > 0 ||
+          selectedEmail.folder.toLowerCase().includes('trash') ||
+          selectedEmail.folder.toLowerCase().includes('spam')
+        )
+        if (canMoveToInbox) {
+          store.restoreEmail()
+          ui.toast('Moved to inbox')
+        } else if (!(selectedEmail?.isDraft || selectedEmail?.folder.toLowerCase().includes('draft'))) {
+          store.archiveEmail()
+          ui.toast('Archived', { action: { label: 'Undo', fn: () => store.undoLast() } })
+        }
         break
       }
       case '#': {
@@ -158,17 +175,17 @@ export function useGlobalKeyboard() {
       case 'c': ui.openCompose(); break
       case 'r': {
         const sel = selectedId
-        if (sel) ui.openCompose({ replyToId: sel })
+        if (sel && !(selectedEmail?.isDraft || selectedEmail?.folder.toLowerCase().includes('draft'))) ui.openCompose({ replyToId: sel })
         break
       }
 	      case 'a': {
 	        const sel = selectedId
-	        if (sel) ui.openCompose({ replyToId: sel, replyAll: true })
+	        if (sel && !(selectedEmail?.isDraft || selectedEmail?.folder.toLowerCase().includes('draft'))) ui.openCompose({ replyToId: sel, replyAll: true })
 	        break
 	      }
       case 'f': {
         const sel = selectedId
-        if (sel) ui.openCompose({ forwardId: sel })
+        if (sel && !(selectedEmail?.isDraft || selectedEmail?.folder.toLowerCase().includes('draft'))) ui.openCompose({ forwardId: sel })
         break
       }
 
@@ -190,7 +207,7 @@ export function useGlobalKeyboard() {
 
       default: break
     }
-  }, [store, ui])
+  }, [store, ui, selectedEmail, selectedId])
 
   useEffect(() => {
     window.addEventListener('keydown', handler)

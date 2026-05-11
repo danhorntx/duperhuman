@@ -76,6 +76,7 @@ interface UiStore {
   // ─ Compose state
   composeReplyToId: string | null
   composeForwardId: string | null
+  composeDraftId: string | null
   composeReplyAll: boolean
 
   // ─ Persisted user preferences
@@ -89,7 +90,7 @@ interface UiStore {
   openShortcuts: () => void
   closeShortcuts: () => void
 
-  openCompose: (opts?: { replyToId?: string; forwardId?: string; replyAll?: boolean }) => void
+  openCompose: (opts?: { replyToId?: string; forwardId?: string; draftId?: string; replyAll?: boolean }) => void
   closeCompose: () => void
 
   openSnoozeModal: () => void
@@ -132,6 +133,7 @@ export const useUiStore = create<UiStore>((set, get) => ({
   toasts: [],
   composeReplyToId: null,
   composeForwardId: null,
+  composeDraftId: null,
   composeReplyAll: false,
 
   settings: loadSettings(),
@@ -148,10 +150,11 @@ export const useUiStore = create<UiStore>((set, get) => ({
       composeOpen: true,
       composeReplyToId: opts?.replyToId ?? null,
       composeForwardId: opts?.forwardId ?? null,
+      composeDraftId: opts?.draftId ?? null,
       composeReplyAll: opts?.replyAll ?? false,
     }),
   closeCompose: () =>
-    set({ composeOpen: false, composeReplyToId: null, composeForwardId: null, composeReplyAll: false }),
+    set({ composeOpen: false, composeReplyToId: null, composeForwardId: null, composeDraftId: null, composeReplyAll: false }),
 
   openSnoozeModal: () => set({ snoozeModalOpen: true }),
   closeSnoozeModal: () => set({ snoozeModalOpen: false }),

@@ -5,7 +5,7 @@ import {
   ArrowBendUpLeftIcon, ArrowBendDoubleUpLeftIcon, ArrowBendUpRightIcon,
   ArchiveIcon, TrashIcon, ClockIcon, TagIcon, CaretDownIcon,
   PaperclipIcon, EnvelopeSimpleOpenIcon, SunIcon, MoonIcon,
-  DownloadSimpleIcon, EyeIcon,
+  DownloadSimpleIcon, EyeIcon, PencilSimpleIcon, TrayIcon,
 } from '@phosphor-icons/react'
 import { AttachmentPreview } from '@/components/email/AttachmentPreview'
 import { attachments as attachmentsApi, emails as emailsApi } from '@/lib/api'
@@ -446,10 +446,33 @@ function formatAttachmentSize(bytes: number): string {
 }
 
 function ActionBar({ email }: { email: Email }) {
-  const { archiveEmail, deleteEmail } = useEmailStore()
+  const { archiveEmail, deleteEmail, restoreEmail } = useEmailStore()
   const { openCompose, openSnoozeModal, toast } = useUiStore()
+  const isDraft = email.isDraft || email.folder.toLowerCase().includes('draft')
+  const canMoveToInbox =
+    email.isArchived ||
+    email.isTrashed ||
+    email.isSpam ||
+    (email.snoozedUntil ?? 0) > 0 ||
+    email.folder.toLowerCase().includes('trash') ||
+    email.folder.toLowerCase().includes('spam')
 
-  const actions = [
+  const draftActions = [
+    {
+      icon: <PencilSimpleIcon size={14} />,
+      label: 'Edit draft',
+      shortcut: 'Enter',
+      onClick: () => openCompose({ draftId: email.id }),
+    },
+    {
+      icon: <TrashIcon size={14} />,
+      label: 'Delete',
+      shortcut: '#',
+      onClick: () => { deleteEmail(email.id); toast('Draft deleted', { action: { label: 'Undo', fn: () => useEmailStore.getState().undoLast() } }) },
+    },
+  ]
+
+  const messageActions = [
     {
       icon: <ArrowBendUpLeftIcon size={14} />,
       label: 'Reply',
@@ -474,6 +497,12 @@ function ActionBar({ email }: { email: Email }) {
       shortcut: 'E',
       onClick: () => { archiveEmail(email.id); toast('Archived', { action: { label: 'Undo', fn: () => useEmailStore.getState().undoLast() } }) },
     },
+    ...(canMoveToInbox ? [{
+      icon: <TrayIcon size={14} />,
+      label: 'Move to Inbox',
+      shortcut: '',
+      onClick: () => { restoreEmail(email.id); toast('Moved to inbox') },
+    }] : []),
     {
       icon: <ClockIcon size={14} />,
       label: 'Snooze',
@@ -487,6 +516,10 @@ function ActionBar({ email }: { email: Email }) {
       onClick: () => { deleteEmail(email.id); toast('Deleted', { action: { label: 'Undo', fn: () => useEmailStore.getState().undoLast() } }) },
     },
   ]
+  const actions = isDraft ? draftActions : messageActions
+  const primaryAction = isDraft
+    ? { label: 'Edit Draft', icon: <PencilSimpleIcon size={13} />, onClick: () => openCompose({ draftId: email.id }) }
+    : { label: 'Reply', icon: <ArrowBendUpLeftIcon size={13} />, onClick: () => openCompose({ replyToId: email.id }) }
 
   return (
     <div
@@ -501,7 +534,7 @@ function ActionBar({ email }: { email: Email }) {
           <button
             key={a.label}
             onClick={a.onClick}
-            title={`${a.label} (${a.shortcut})`}
+            title={a.shortcut ? `${a.label} (${a.shortcut})` : a.label}
             className="group flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all duration-100 hover:bg-[var(--bg-hover)] flex-shrink-0"
             style={{ color: 'var(--text-secondary)' }}
           >
@@ -509,14 +542,14 @@ function ActionBar({ email }: { email: Email }) {
             <span className="hidden md:inline">{a.label}</span>
             {/* `hidden` removes the kbd from layout entirely until hover —
                 opacity-0 left a 20px ghost that pushed Reply off-screen. */}
-            <kbd className="hidden group-hover:inline-flex">{a.shortcut}</kbd>
+            {a.shortcut && <kbd className="hidden group-hover:inline-flex">{a.shortcut}</kbd>}
           </button>
         ))}
       </div>
 
       {/* Reply button — never shrinks, never overlaps */}
       <button
-        onClick={() => openCompose({ replyToId: email.id })}
+        onClick={primaryAction.onClick}
         className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-sm font-medium transition-all duration-100 flex-shrink-0 ml-2"
         style={{
           background: 'var(--accent-faint)',
@@ -524,8 +557,8 @@ function ActionBar({ email }: { email: Email }) {
           color:      'var(--accent)',
         }}
       >
-        <ArrowBendUpLeftIcon size={13} />
-        Reply
+        {primaryAction.icon}
+        {primaryAction.label}
       </button>
     </div>
   )
@@ -587,6 +620,7 @@ export function EmailThread({ email: overrideEmail }: EmailThreadProps = {}) {
 
   const visibleThread = threadEmails.length > 0 ? threadEmails : [email]
   const latestEmail = visibleThread[visibleThread.length - 1] ?? email
+  const actionEmail = (email.isDraft || email.folder.toLowerCase().includes('draft')) ? email : latestEmail
   const toggle = (id: string) =>
     setExpandedIds(prev => {
       const next = new Set(prev)
@@ -646,7 +680,7 @@ export function EmailThread({ email: overrideEmail }: EmailThreadProps = {}) {
 	      </div>
 
 	      {/* Action bar */}
-	      <ActionBar email={latestEmail} />
+	      <ActionBar email={actionEmail} />
     </div>
   )
 }

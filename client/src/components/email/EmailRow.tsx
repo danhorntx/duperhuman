@@ -1,6 +1,7 @@
 import { memo } from 'react'
 import { StarIcon } from '@phosphor-icons/react'
 import { Avatar } from '@/components/ui/Avatar'
+import { useLabelsStore } from '@/store/labelsStore'
 import { formatEmailDate, displayName, truncate } from '@/lib/utils'
 import type { Email } from '@/types/email'
 
@@ -21,6 +22,11 @@ interface EmailRowProps {
 export const EmailRow = memo(function EmailRow({
   email, id, isFocused, isSelected, style, onClick, onStar,
 }: EmailRowProps) {
+  const labels = useLabelsStore(s => s.labels)
+  const visibleLabel = email.labels
+    .map(labelId => labels.find(label => label.id === labelId))
+    .find(Boolean)
+
   return (
     <div
       role="option"
@@ -60,16 +66,16 @@ export const EmailRow = memo(function EmailRow({
           >
             {displayName(email.from)}
           </span>
-          {email.labels.length > 0 && (
+          {visibleLabel && (
             <span
               className="text-[10px] px-1.5 py-0.5 rounded-full flex-shrink-0"
               style={{
-                background: 'var(--accent-faint)',
-                color: 'var(--accent)',
-                border: '1px solid var(--border-accent)',
+                background: `${visibleLabel.color}22`,
+                color: visibleLabel.color,
+                border: `1px solid ${visibleLabel.color}55`,
               }}
             >
-              {email.labels[0]}
+              {visibleLabel.name}
             </span>
           )}
         </div>

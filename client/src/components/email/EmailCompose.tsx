@@ -10,6 +10,7 @@ import { useEmailStore } from '@/store/emailStore'
 import { SnippetPicker } from '@/components/snippets/SnippetPicker'
 import { getContacts, filterContacts, type RankedContact } from '@/lib/contacts'
 import { queueEmail, processOutbox } from '@/lib/outbox'
+import { emails as emailsApi } from '@/lib/api'
 import { generateId } from '@/lib/utils'
 import { db } from '@/db/db'
 import type { Email, EmailAddress, Snippet } from '@/types/email'
@@ -223,7 +224,7 @@ const RecipientField = forwardRef<RecipientFieldHandle, {
 })
 
 export function ComposeWindow() {
-  const { composeOpen, composeReplyToId, composeForwardId, composeReplyAll, closeCompose, toast } = useUiStore()
+  const { composeOpen, composeReplyToId, composeForwardId, composeDraftId, composeReplyAll, closeCompose, toast } = useUiStore()
   const settings = useUiStore(s => s.settings)
   const setSetting = useUiStore(s => s.setSetting)
   const getActiveAccount = useEmailStore(s => s.getActiveAccount)
@@ -273,25 +274,41 @@ export function ComposeWindow() {
       draftKeyRef.current = null
       return
     }
-    const sourceId = composeReplyToId ?? composeForwardId
+    const sourceId = composeReplyToId ?? composeForwardId ?? composeDraftId
     if (!activeAccount) return
-    draftKeyRef.current = sourceId
+    draftKeyRef.current = composeDraftId
+      ? `${activeAccount.id}:edit-draft:${composeDraftId}`
+      : sourceId
       ? `${activeAccount.id}:${sourceId}`
       : `${activeAccount.id}:new:${generateId()}`
     setDraftKey(draftKeyRef.current)
 
     let cancelled = false
     ;(async () => {
-      const source = sourceId ? await db.emails.get(sourceId) : null
+      let source = sourceId ? await db.emails.get(sourceId) : null
+      if (composeDraftId && source && !source.bodyHtml && !source.bodyText) {
+        source = await emailsApi.get(composeDraftId)
+        await db.emails.put(source)
+      }
       if (!cancelled) setSourceEmail(source ?? null)
     })()
     return () => { cancelled = true }
-  }, [composeOpen, composeReplyToId, composeForwardId, activeAccount?.id])
+  }, [composeOpen, composeReplyToId, composeForwardId, composeDraftId, activeAccount?.id])
 
   // Pre-fill for replies/forwards/new
   useEffect(() => {
     if (!composeOpen) return
-	    if (composeReplyToId && sourceEmail) {
+    if (composeDraftId && sourceEmail) {
+      setTo(sourceEmail.to.map(toRecipient))
+      setCc(sourceEmail.cc.map(toRecipient))
+      setBcc(sourceEmail.bcc.map(toRecipient))
+      setShowCc(sourceEmail.cc.length > 0)
+      setShowBcc(sourceEmail.bcc.length > 0)
+      setSubject(sourceEmail.subject)
+      if (bodyRef.current) {
+        bodyRef.current.innerHTML = DOMPurify.sanitize(sourceEmail.bodyHtml || escapeHtml(sourceEmail.bodyText))
+      }
+	    } else if (composeReplyToId && sourceEmail) {
       const ownAddress = activeAccount?.email ?? ''
       const baseTo = [sourceEmail.replyTo ?? sourceEmail.from]
       setTo(composeReplyAll
@@ -327,7 +344,7 @@ export function ComposeWindow() {
 	      if (bodyRef.current) bodyRef.current.innerHTML = ''
 	    }
 	    setScheduledAt(null)
-	  }, [composeOpen, composeReplyToId, composeForwardId, composeReplyAll, sourceEmail, activeAccount?.email])
+	  }, [composeOpen, composeReplyToId, composeForwardId, composeDraftId, composeReplyAll, sourceEmail, activeAccount?.email])
 
   useEffect(() => {
     if (!composeOpen || !draftKey) return
@@ -357,6 +374,7 @@ export function ComposeWindow() {
 	        accountId: activeAccount.id,
 	        replyToId: composeReplyToId ?? undefined,
 	        forwardOfId: composeForwardId ?? undefined,
+	        draftSourceId: composeDraftId ?? undefined,
 	        to: to.map(r => ({ name: r.name, address: r.address })),
 	        cc: cc.map(r => ({ name: r.name, address: r.address })),
 	        bcc: bcc.map(r => ({ name: r.name, address: r.address })),
@@ -368,15 +386,15 @@ export function ComposeWindow() {
       })
 	    }, 2500)
 	    return () => window.clearInterval(timer)
-	  }, [composeOpen, activeAccount, draftKey, composeReplyToId, composeForwardId, to, cc, bcc, subject, scheduledAt])
+	  }, [composeOpen, activeAccount, draftKey, composeReplyToId, composeForwardId, composeDraftId, to, cc, bcc, subject, scheduledAt])
 
   // Focus the right field after the open animation settles. New compose and
   // forward go to the To input; replies go to the body so the user can start
   // typing their response immediately.
   useEffect(() => {
     if (!composeOpen) return
-    const focusTo = !composeReplyToId            // new compose OR forward
-    const focusBody = !!composeReplyToId         // reply / reply-all
+    const focusTo = !composeReplyToId && !composeDraftId // new compose OR forward
+    const focusBody = !!composeReplyToId || !!composeDraftId
     const t = setTimeout(() => {
       if (focusTo) {
         toFieldRef.current?.focus()
@@ -392,13 +410,14 @@ export function ComposeWindow() {
       }
     }, 220) // matches the motion `duration: 0.18` + a hair of buffer
     return () => clearTimeout(t)
-  }, [composeOpen, composeReplyToId, composeForwardId])
+  }, [composeOpen, composeReplyToId, composeForwardId, composeDraftId])
 
 	  const sendEmail = async () => {
 	    if (!activeAccount || to.length === 0) return
 
 	    const bodyHtml = bodyRef.current?.innerHTML ?? ''
 	    const bodyText = bodyRef.current?.innerText ?? ''
+      const editedDraftId = composeDraftId
 	    const payload = {
 		      accountId: activeAccount.id,
 		      to: to.map(r => ({ name: r.name, address: r.address })),
@@ -409,6 +428,7 @@ export function ComposeWindow() {
 	      bodyText,
 	      replyToId: composeReplyToId ?? undefined,
 	      forwardOfId: composeForwardId ?? undefined,
+	      draftSourceId: composeDraftId ?? undefined,
 	    }
 
 		    if (scheduledAt && scheduledAt > Date.now() + 5000) {
@@ -430,8 +450,10 @@ export function ComposeWindow() {
 	      setSending(true)
 		      try {
 		        await queueEmail(payload, Date.now())
+		        const result = await processOutbox()
+            if (result.failed > 0) throw new Error('Outbox send failed')
             if (draftKeyRef.current) await db.drafts.delete(draftKeyRef.current)
-		        await processOutbox()
+            if (editedDraftId) await db.emails.delete(editedDraftId)
 	        toast('Sent')
       } catch (err) {
         toast('Failed to send — check your connection')
@@ -588,7 +610,36 @@ export function ComposeWindow() {
     else         setSetting('composeFullScreen', next)
   }
 
+  const discardCompose = async () => {
+    const key = draftKeyRef.current
+    if (key) await db.drafts.delete(key)
+
+    if (composeDraftId) {
+      const store = useEmailStore.getState()
+      const activeState = activeAccount ? store.accountStates[activeAccount.id] : null
+      const isVisibleDraft = activeState?.emails.some(e => e.id === composeDraftId)
+
+      if (isVisibleDraft) {
+        await store.deleteEmail(composeDraftId)
+      } else {
+        const draft = await db.emails.get(composeDraftId)
+        await db.emails.delete(composeDraftId)
+        try {
+          await emailsApi.trash([composeDraftId])
+        } catch (err) {
+          if (draft) await db.emails.put({ ...draft, isTrashed: true })
+          toast('Draft delete will retry when the server is reachable')
+          console.error(err)
+        }
+      }
+      toast('Draft discarded')
+    }
+
+    closeCompose()
+  }
+
   const titleText =
+    composeDraftId ? 'Edit Draft' :
     composeReplyToId ? 'Reply' :
     composeForwardId ? 'Forward' :
     'New Message'
@@ -654,10 +705,10 @@ export function ComposeWindow() {
                 {fullScreen ? <ArrowsInIcon size={13} /> : <ArrowsOutIcon size={13} />}
               </button>
               <button
-                onClick={closeCompose}
+                onClick={discardCompose}
                 className="p-1.5 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
                 style={{ color: 'var(--text-muted)' }}
-                title="Discard"
+                title={composeDraftId ? 'Discard draft' : 'Discard'}
               >
                 <TrashIcon size={13} weight="regular" />
               </button>

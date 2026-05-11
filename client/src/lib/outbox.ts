@@ -15,6 +15,7 @@ export async function queueEmail(payload: SendEmailPayload, sendAt = Date.now())
     bodyText: payload.bodyText,
     replyToId: payload.replyToId,
     forwardOfId: payload.forwardOfId,
+    draftSourceId: payload.draftSourceId,
     sendAt,
     createdAt: now,
     status: 'queued',
@@ -48,6 +49,7 @@ export async function processOutbox(limit = 5): Promise<{ sent: number; failed: 
         bodyText: item.bodyText,
         replyToId: item.replyToId,
         forwardOfId: item.forwardOfId,
+        draftSourceId: item.draftSourceId,
       })
       await db.outbox.delete(item.id)
       sent += 1
@@ -65,4 +67,3 @@ export async function processOutbox(limit = 5): Promise<{ sent: number; failed: 
 
   return { sent, failed }
 }
-
