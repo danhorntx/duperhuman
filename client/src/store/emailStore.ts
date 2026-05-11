@@ -189,6 +189,12 @@ async function loadLocalEmails(accountId: string, activeFolder: ActiveFolder, ac
     .reverse().sortBy('date')
 }
 
+async function countLoadedRemoteFolder(accountId: string, folder: string): Promise<number> {
+  return db.emails
+    .where('[accountId+folder]').equals([accountId, folder])
+    .count()
+}
+
 function folderLooksLike(folder: string, token: string) {
   return folder.toLowerCase().includes(token)
 }
@@ -687,7 +693,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
 
     set(s => ({ accountStates: patchAS(s, { isSyncing: true }) }))
     try {
-      const offset = startState.emails.length
+      const offset = await countLoadedRemoteFolder(account.id, fetchFolder)
       const more   = await emailsApi.list(account.id, fetchFolder, FIRST_SYNC_LIMIT, offset)
       console.log(`[loadMore] ${account.id} ${fetchFolder} offset=${offset} → ${more.length}`)
       if (more.length === 0) {
@@ -747,10 +753,10 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
 
         const merged  = [...nowState.emails, ...fresh].sort((a, b) => b.date - a.date)
         set(s => ({ accountStates: patchAS(s, { emails: merged, isSyncing: false }) }))
-        return fresh.length
+        return more.length
       }
       set(s => ({ accountStates: patchAS(s, { isSyncing: false }) }))
-      return 0
+      return more.length
     } catch (err) {
       console.error('[loadMore] failed', err)
       set(s => ({ accountStates: patchAS(s, { isSyncing: false }) }))

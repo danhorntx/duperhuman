@@ -278,29 +278,38 @@ function SetupScreen({ onSetup }: { onSetup: (account: Account, password: string
 function AppInner() {
   useGlobalKeyboard()
   const processLocalWorkflow = useEmailStore(s => s.processLocalWorkflow)
+  const triggerSync = useEmailStore(s => s.triggerSync)
   const activeAccountId = useEmailStore(s => s.activeAccountId)
   const setAccounts = useEmailStore(s => s.setAccounts)
   const toast = useUiStore(s => s.toast)
 
   useEffect(() => {
+    let running = false
     const run = async () => {
+      if (running) return
+      running = true
+      try {
 	      await processOutbox()
-      await processMailMutations()
+        await processMailMutations()
 	      await processLocalWorkflow()
-      if (activeAccountId) {
-        const due = await dueFollowUps(activeAccountId)
-        if (due.length > 0) {
-          // Mark reminders complete after surfacing them once. The email remains
-          // in local cache and can be found through search or labels.
-          await Promise.all(due.map(f => completeFollowUp(f.id)))
-          toast(`${due.length} follow-up${due.length === 1 ? '' : 's'} due`)
+        if (activeAccountId) {
+          await triggerSync()
+          const due = await dueFollowUps(activeAccountId)
+          if (due.length > 0) {
+            // Mark reminders complete after surfacing them once. The email remains
+            // in local cache and can be found through search or labels.
+            await Promise.all(due.map(f => completeFollowUp(f.id)))
+            toast(`${due.length} follow-up${due.length === 1 ? '' : 's'} due`)
+          }
         }
+      } finally {
+        running = false
       }
     }
     run()
     const timer = window.setInterval(run, 30_000)
     return () => window.clearInterval(timer)
-  }, [activeAccountId, processLocalWorkflow, toast])
+  }, [activeAccountId, processLocalWorkflow, toast, triggerSync])
 
   useEffect(() => {
     let cancelled = false

@@ -4,6 +4,7 @@ interface VirtualListOptions {
   count: number
   itemHeight: number
   overscan?: number
+  trailingHeight?: number
 }
 
 interface VirtualItem {
@@ -17,7 +18,7 @@ interface VirtualItem {
  * No dependency on react-virtual for tighter control. Each row is a fixed height
  * (Superhuman's rows are uniform 56px), making this trivially fast.
  */
-export function useVirtualList({ count, itemHeight, overscan = 5 }: VirtualListOptions) {
+export function useVirtualList({ count, itemHeight, overscan = 5, trailingHeight = 0 }: VirtualListOptions) {
   const scrollRef = useRef<HTMLDivElement | null>(null)
   const [scrollTop, setScrollTop] = useState(0)
   const [containerHeight, setContainerHeight] = useState(0)
@@ -57,13 +58,13 @@ export function useVirtualList({ count, itemHeight, overscan = 5 }: VirtualListO
   }, [count, measure])
 
   useEffect(() => {
-    const maxScrollTop = Math.max(0, count * itemHeight - containerHeight)
+    const maxScrollTop = Math.max(0, count * itemHeight + trailingHeight - containerHeight)
     if (scrollTop > maxScrollTop) {
       const el = scrollRef.current
       if (el) el.scrollTop = maxScrollTop
       setScrollTop(maxScrollTop)
     }
-  }, [containerHeight, count, itemHeight, scrollTop])
+  }, [containerHeight, count, itemHeight, scrollTop, trailingHeight])
 
   const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan)
   const endIndex = Math.min(
@@ -79,7 +80,7 @@ export function useVirtualList({ count, itemHeight, overscan = 5 }: VirtualListO
     return items
   }, [endIndex, itemHeight, startIndex])
 
-  const totalSize = count * itemHeight
+  const totalSize = count * itemHeight + trailingHeight
 
   /** Scroll the focused item into view */
   const scrollToIndex = useCallback((index: number) => {

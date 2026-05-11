@@ -8,6 +8,7 @@ import { EmailRow } from './EmailRow'
 import type { ActiveFolder } from '@/types/email'
 
 const ROW_HEIGHT = 56
+const FOOTER_HEIGHT = 92
 
 // "Dwell" before we auto-mark-as-read. Stops rapid j/k scrolling from burning
 // through unread state.
@@ -60,6 +61,8 @@ export function EmailList() {
   const focusIndex = useEmailStore(s => s.focusIndex)
   const loadMore  = useEmailStore(s => s.loadMore)
   const [moreEmpty, setMoreEmpty] = useState(false)
+  const showFooter = emails.length > 0
+  const showLoadMore = showFooter && !moreEmpty
 
   const handleLoadMore = async () => {
     const got = await loadMore()
@@ -72,6 +75,7 @@ export function EmailList() {
     count: emails.length,
     itemHeight: ROW_HEIGHT,
     overscan: 8,
+    trailingHeight: showFooter ? FOOTER_HEIGHT : 0,
   })
 
   // Keep focused row visible
@@ -154,32 +158,39 @@ export function EmailList() {
               </div>
             )
           })}
-        </div>
 
-        {/* "Load older" footer — fetches the next page from IMAP. Hidden
-            once we've established there's nothing more on the server. */}
-        {!moreEmpty && emails.length > 0 && (
-          <div className="flex justify-center py-4">
-            <button
-              onClick={handleLoadMore}
-              disabled={isSyncing}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors disabled:opacity-50"
+          {showFooter && (
+            <div
+              className="flex flex-col items-center justify-center gap-2"
               style={{
-                background: 'var(--bg-hover)',
-                border:     '1px solid var(--border-subtle)',
-                color:      'var(--text-secondary)',
+                position: 'absolute',
+                top: emails.length * ROW_HEIGHT,
+                left: 0,
+                right: 0,
+                height: FOOTER_HEIGHT,
               }}
             >
-              <CaretDownIcon size={11} weight="bold" />
-              {isSyncing ? 'Loading…' : 'Load older'}
-            </button>
-          </div>
-        )}
-
-        {/* Footer count */}
-        <div className="flex justify-center pb-3 text-[11px] text-[var(--text-muted)]">
-          {emails.length.toLocaleString()} email{emails.length === 1 ? '' : 's'}
-          {moreEmpty && ' · all loaded'}
+              {showLoadMore && (
+                <button
+                  onClick={handleLoadMore}
+                  disabled={isSyncing}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-md text-xs transition-colors disabled:opacity-50"
+                  style={{
+                    background: 'var(--bg-hover)',
+                    border:     '1px solid var(--border-subtle)',
+                    color:      'var(--text-secondary)',
+                  }}
+                >
+                  <CaretDownIcon size={11} weight="bold" />
+                  {isSyncing ? 'Loading...' : 'Load older'}
+                </button>
+              )}
+              <div className="text-[11px] text-[var(--text-muted)]">
+                {emails.length.toLocaleString()} email{emails.length === 1 ? '' : 's'}
+                {moreEmpty && ' · all loaded'}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

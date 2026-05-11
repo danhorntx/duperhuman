@@ -65,7 +65,10 @@ function getConnection(account: ImapAccount): Promise<Imap> {
       host: account.imapHost,
       port: account.imapPort,
       tls: account.imapTls,
-      tlsOptions: { rejectUnauthorized: !config.allowInsecureTls },
+      tlsOptions: {
+        rejectUnauthorized: !config.allowInsecureTls,
+        servername: account.imapHost,
+      },
       keepalive: { interval: 10000, idleInterval: 300000, forceNoop: true },
     })
 
@@ -100,9 +103,18 @@ function parseAddress(addr: MailAddr): { name: string; address: string }[] {
 
 type FetchMode = 'headers' | 'full'
 
-function toFetchedEmail(raw: Buffer, flags: string[], uid: number, accountId: string, folder: string, mode: FetchMode): Promise<FetchedEmail | null> {
+function toFetchedEmail(
+  raw: Buffer,
+  flags: string[],
+  uid: number,
+  accountId: string,
+  folder: string,
+  mode: FetchMode,
+  receivedAt?: number,
+): Promise<FetchedEmail | null> {
   return simpleParser(raw)
     .then(parsed => {
+      const effectiveDate = receivedAt ?? parsed.date?.getTime() ?? Date.now()
       const flagsObj = {
         seen:     flags.includes('\\Seen'),
         answered: flags.includes('\\Answered'),
@@ -130,8 +142,8 @@ function toFetchedEmail(raw: Buffer, flags: string[], uid: number, accountId: st
         to: parseAddress(parsed.to as MailAddr),
         cc: parseAddress(parsed.cc as MailAddr),
         bcc: parseAddress(parsed.bcc as MailAddr),
-        date: parsed.date?.getTime() ?? Date.now(),
-        receivedAt: Date.now(),
+        date: effectiveDate,
+        receivedAt: effectiveDate,
         snippet,
         bodyHtml: mode === 'full' && typeof parsed.html === 'string' ? parsed.html : '',
         bodyText,
@@ -164,11 +176,13 @@ function toFetchedEmail(raw: Buffer, flags: string[], uid: number, accountId: st
 
 // ─── Fetch a batch of messages. List views use headers only; body fetch is lazy.
 
-function fetchRange(imap: Imap, seqRange: string, accountId: string, folder: string, mode: FetchMode): Promise<FetchedEmail[]> {
+function fetchByUids(imap: Imap, uids: number[], accountId: string, folder: string, mode: FetchMode): Promise<FetchedEmail[]> {
   return new Promise((resolve, reject) => {
-    const results: Map<number, { raw: Buffer; flags: string[]; uid: number }> = new Map()
+    if (uids.length === 0) return resolve([])
 
-    const fetcher = imap.seq.fetch(seqRange, {
+    const results: Map<number, { raw: Buffer; flags: string[]; uid: number; receivedAt?: number }> = new Map()
+
+    const fetcher = imap.fetch(uids, {
       bodies: mode === 'full'
         ? ''
         : 'HEADER.FIELDS (FROM TO CC BCC SUBJECT DATE MESSAGE-ID REFERENCES IN-REPLY-TO)',
@@ -180,6 +194,7 @@ function fetchRange(imap: Imap, seqRange: string, accountId: string, folder: str
       const chunks: Buffer[] = []
       let flags: string[] = []
       let uid = seqno
+      let receivedAt: number | undefined
 
       msg.on('body', (stream) => {
         stream.on('data', (chunk: Buffer) => chunks.push(chunk))
@@ -187,16 +202,17 @@ function fetchRange(imap: Imap, seqRange: string, accountId: string, folder: str
       msg.once('attributes', (attrs) => {
         uid = attrs.uid ?? seqno
         flags = attrs.flags ?? []
+        receivedAt = attrs.date?.getTime()
       })
       msg.once('end', () => {
-        results.set(uid, { raw: Buffer.concat(chunks), flags, uid })
+        results.set(uid, { raw: Buffer.concat(chunks), flags, uid, receivedAt })
       })
     })
 
     fetcher.once('error', reject)
 	    fetcher.once('end', async () => {
 	      const emails = (await Promise.all(
-          [...results.values()].map(({ raw, flags, uid }) => toFetchedEmail(raw, flags, uid, accountId, folder, mode)),
+          [...results.values()].map(({ raw, flags, uid, receivedAt }) => toFetchedEmail(raw, flags, uid, accountId, folder, mode, receivedAt)),
         )).filter((email): email is FetchedEmail => !!email)
 
 	      resolve(emails.sort((a, b) => b.date - a.date))
@@ -216,21 +232,24 @@ export async function fetchEmails(
   const imap = await getConnection(account)
 
   return new Promise((resolve, reject) => {
-    imap.openBox(folder, true, async (err, box) => {
+    imap.openBox(folder, true, (err) => {
       if (err) return reject(err)
-      const total = box.messages.total
-      if (total === 0) return resolve([])
 
-      const end = Math.max(1, total - offset)
-      const start = Math.max(1, end - limit + 1)
-      const range = `${start}:${end}`
+      imap.search(['ALL'], async (searchErr, foundUids) => {
+        if (searchErr) return reject(searchErr)
+        const sortedUids = Array.from(new Set(foundUids)).sort((a, b) => a - b)
+        const end = Math.max(0, sortedUids.length - offset)
+        const start = Math.max(0, end - limit)
+        const pageUids = sortedUids.slice(start, end)
+        if (pageUids.length === 0) return resolve([])
 
-      try {
-	        const emails = await fetchRange(imap, range, account.id, folder, fetchBodies ? 'full' : 'headers')
-	        resolve(emails)
-      } catch (fetchErr) {
-        reject(fetchErr)
-      }
+        try {
+          const emails = await fetchByUids(imap, pageUids, account.id, folder, fetchBodies ? 'full' : 'headers')
+          resolve(emails)
+        } catch (fetchErr) {
+          reject(fetchErr)
+        }
+      })
     })
   })
 }
@@ -322,6 +341,7 @@ export async function fetchEmailByUid(
       const fetcher = imap.fetch(String(uid), { bodies: '', markSeen: false })
       const chunks: Buffer[] = []
       let flags: string[] = []
+      let receivedAt: number | undefined
 
       fetcher.on('message', (msg) => {
         msg.on('body', (stream) => {
@@ -329,12 +349,13 @@ export async function fetchEmailByUid(
         })
         msg.once('attributes', attrs => {
           flags = attrs.flags ?? []
+          receivedAt = attrs.date?.getTime()
         })
       })
       fetcher.once('error', reject)
       fetcher.once('end', async () => {
         if (chunks.length === 0) return resolve(null)
-        const email = await toFetchedEmail(Buffer.concat(chunks), flags, uid, account.id, folder, 'full')
+        const email = await toFetchedEmail(Buffer.concat(chunks), flags, uid, account.id, folder, 'full', receivedAt)
         resolve(email)
       })
     })
