@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie'
-import type { Email, EmailThread, Account, Draft, CustomLabel, Snippet, OutboxEmail, FollowUpReminder, Contact, SyncMeta } from '@/types/email'
+import type { Email, EmailThread, Account, Draft, CustomLabel, Snippet, OutboxEmail, MailMutation, FollowUpReminder, Contact, SyncMeta } from '@/types/email'
 
 // ─── Schema ───────────────────────────────────────────────────────────────────
 // Local-first cache. The IMAP server is the source of truth; this DB is the
@@ -13,6 +13,7 @@ class SuperhumanDB extends Dexie {
   labels!: Table<CustomLabel>
   snippets!: Table<Snippet>
   outbox!: Table<OutboxEmail>
+  mailMutations!: Table<MailMutation>
   followUps!: Table<FollowUpReminder>
   contacts!: Table<Contact>
   syncMeta!: Table<SyncMeta>
@@ -81,6 +82,39 @@ class SuperhumanDB extends Dexie {
     // v5 — preload/incremental sync metadata
     this.version(5).stores({
       syncMeta: 'key, accountId, folder, status, updatedAt',
+    })
+
+    // v6 — durable optimistic mail operations for offline/flaky connections,
+    // plus extra compound read indexes for split inbox/search/counts.
+    this.version(6).stores({
+      emails: [
+        'id',
+        'accountId',
+        'folder',
+        'threadId',
+        'date',
+        'receivedAt',
+        'isRead',
+        'isStarred',
+        'isArchived',
+        'isTrashed',
+        'isSpam',
+        'isMuted',
+        'isDraft',
+        'snoozedUntil',
+        '[accountId+folder]',
+        '[accountId+folder+date]',
+        '[accountId+folder+isRead]',
+        '[accountId+folder+isArchived]',
+        '[accountId+isRead]',
+        '[accountId+isStarred]',
+        '[accountId+isDraft]',
+        '[accountId+isTrashed]',
+        '[accountId+isSpam]',
+        '[accountId+snoozedUntil]',
+        '[threadId+date]',
+      ].join(','),
+      mailMutations: 'id, accountId, type, status, updatedAt',
     })
   }
 }

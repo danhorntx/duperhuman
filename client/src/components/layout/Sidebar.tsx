@@ -264,7 +264,7 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
                 {item.unreadCount != null && item.unreadCount > 0 && (
                   <span
                     className="absolute -top-0.5 -right-0.5 text-[8px] font-bold px-1 rounded-full"
-                    style={{ background: 'var(--accent)', color: '#1a0617' }}
+                    style={{ background: 'var(--accent)', color: 'var(--accent-contrast)' }}
                   >
                     {item.unreadCount > 99 ? '99' : item.unreadCount}
                   </span>
@@ -377,7 +377,7 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
         >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
             <path d="M17.5 1L7.5 13h5l-1 10 10-12h-5l1-10z"
-              fill="#cbb7fb" stroke="#cbb7fb" strokeWidth="0.5" strokeLinejoin="round" />
+              fill="var(--accent)" stroke="var(--accent)" strokeWidth="0.5" strokeLinejoin="round" />
           </svg>
         </div>
         <div className="flex-1 min-w-0">
@@ -423,7 +423,7 @@ export function Sidebar({ onAddAccount }: SidebarProps) {
               {item.unreadCount != null && item.unreadCount > 0 && (
                 <span
                   className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full"
-                  style={{ background: 'var(--accent)', color: '#1a0617' }}
+                  style={{ background: 'var(--accent)', color: 'var(--accent-contrast)' }}
                 >
                   {item.unreadCount > 99 ? '99+' : item.unreadCount}
                 </span>

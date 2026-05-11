@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify'
 import { getAccount, syncFolder, getCachedEmails, invalidateCache, resolveImapFolder } from '../services/sync.js'
-import { addFlags, removeFlags, moveMessages, fetchAttachmentByUid, setLabels } from '../services/imap.js'
+import { addFlags, removeFlags, moveMessages, fetchAttachmentByUid, fetchEmailByUid, setLabels } from '../services/imap.js'
 import { sendEmail } from '../services/smtp.js'
 import { gmailModify, gmailTrash, gmailUntrash } from '../services/gmail.js'
 
@@ -34,14 +34,41 @@ function isGmailHost(host: string) {
 
 async function runBulk(ids: string[], fn: (id: string) => Promise<void>) {
   const failures: { id: string; error: string }[] = []
-  for (const id of ids) {
-    try {
-      await fn(id)
-    } catch (err) {
-      failures.push({ id, error: err instanceof Error ? err.message : String(err) })
+  const queue = [...ids]
+  const workers = Array.from({ length: Math.min(4, queue.length) }, async () => {
+    while (queue.length > 0) {
+      const id = queue.shift()
+      if (!id) continue
+      try {
+        await fn(id)
+      } catch (err) {
+        failures.push({ id, error: err instanceof Error ? err.message : String(err) })
+      }
     }
-  }
+  })
+  await Promise.all(workers)
   return failures
+}
+
+function sendAcceptedLocalOnly(reply: import('fastify').FastifyReply, feature: string) {
+  return reply
+    .header('X-Duperhuman-Local-Only', feature)
+    .status(202)
+    .send({ status: 'accepted', scope: 'local', feature })
+}
+
+async function runLabelUpdate(id: string, labels: string[]) {
+  const { accountId, folder, uid, rawUid } = parseEmailId(id)
+  const account = getAccount(accountId)
+  if (!account) throw new Error('Account not found')
+  if (account.provider === 'gmail') {
+    // Client-created labels are local Duperhuman ids, not guaranteed Gmail
+    // label ids. Keep Gmail local-first until label creation/mapping exists.
+    invalidateCache(accountId, folder)
+    return
+  }
+  await setLabels(account, folder, [uid], labels)
+  invalidateCache(accountId, folder)
 }
 
 function sendBulkResult(reply: import('fastify').FastifyReply, failures: { id: string; error: string }[]) {
@@ -121,11 +148,16 @@ export async function emailRoutes(app: FastifyInstance) {
     const account = getAccount(accountId)
     if (!account) return reply.status(404).send({ error: 'Account not found' })
 
-    const cached = getCachedEmails(accountId, folder)
-	    const email = cached.find(e => e.uid === uid || e.id.endsWith(`:${rawUid}`))
-    if (!email) return reply.status(404).send({ error: 'Email not found' })
-    return email
-  })
+	    const cached = getCachedEmails(accountId, folder)
+		    const email = cached.find(e => e.uid === uid || e.id.endsWith(`:${rawUid}`))
+      if (email && (email.bodyHtml || email.bodyText || account.provider === 'gmail')) return email
+      if (account.provider !== 'gmail') {
+        const full = await fetchEmailByUid(account, resolveImapFolder(account.imapHost, folder), uid)
+        if (full) return { ...full, folder, id: `${accountId}:${folder}:${uid}` }
+      }
+	    if (!email) return reply.status(404).send({ error: 'Email not found' })
+	    return email
+	  })
 
   // Send email
   app.post<{
@@ -285,21 +317,18 @@ export async function emailRoutes(app: FastifyInstance) {
   })
 
   // Snooze (server just logs it; real resurface is client-side for now)
-  app.post<{ Body: { ids: string[]; until: number } }>('/emails/snooze', async (req, reply) => {
-    // In a full implementation, store snooze metadata and re-surface via a cron.
-    // For local-first: client handles resurface from IndexedDB.
-    return reply.status(204).send()
-  })
+	  app.post<{ Body: { ids: string[]; until: number } }>('/emails/snooze', async (req, reply) => {
+	    return sendAcceptedLocalOnly(reply, 'snooze')
+	  })
 
-  // Mute thread
-  app.post<{ Body: { threadId: string } }>('/emails/mute', async (req, reply) => {
-    // Archive all emails in the thread
-    return reply.status(204).send()
-  })
+	  // Mute thread
+	  app.post<{ Body: { threadId: string } }>('/emails/mute', async (req, reply) => {
+	    return sendAcceptedLocalOnly(reply, 'mute')
+	  })
 
-  // Label
-  app.post<{ Body: { ids: string[]; labels: string[] } }>('/emails/label', async (req, reply) => {
-    // For IMAP: use custom flags or move to label folder
-    return reply.status(204).send()
-  })
+	  // Label
+	  app.post<{ Body: { ids: string[]; labels: string[] } }>('/emails/label', async (req, reply) => {
+	    const failures = await runBulk(req.body.ids, id => runLabelUpdate(id, req.body.labels))
+	    return sendBulkResult(reply, failures)
+	  })
 }

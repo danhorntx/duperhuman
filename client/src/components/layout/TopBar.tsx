@@ -2,7 +2,6 @@ import { MagnifyingGlassIcon, KeyboardIcon, ArrowClockwiseIcon } from '@phosphor
 import { useEmailStore, selectActiveState } from '@/store/emailStore'
 import { useUiStore } from '@/store/uiStore'
 import { useLabelsStore } from '@/store/labelsStore'
-import { formatShortcut } from '@/lib/utils'
 
 export function TopBar() {
 	  const { activeFolder, isLoading } = useEmailStore(selectActiveState)
@@ -10,7 +9,7 @@ export function TopBar() {
 	  const preloadAllMail = useEmailStore(s => s.preloadAllMail)
 	  const syncProgress = useEmailStore(s => s.syncProgress)
 	  const syncStatus = useEmailStore(s => s.syncStatus)
-  const openCommandPalette = useUiStore(s => s.openCommandPalette)
+  const openSearch = useUiStore(s => s.openSearchView)
   const openShortcuts = useUiStore(s => s.openShortcuts)
   const labels = useLabelsStore(s => s.labels)
 
@@ -33,14 +32,14 @@ export function TopBar() {
 
       {/* Search trigger */}
       <button
-        onClick={openCommandPalette}
+	        onClick={() => openSearch('')}
         className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm text-[var(--text-muted)] transition-colors duration-100 hover:bg-[var(--bg-hover)] max-w-xs"
         style={{ border: '1px solid var(--border-subtle)' }}
       >
         <MagnifyingGlassIcon size={13} weight="regular" />
-        <span>Search</span>
+	        <span>Search mail</span>
         <span className="ml-auto flex items-center gap-0.5">
-          <kbd>{formatShortcut('cmd+k')}</kbd>
+	          <kbd>/</kbd>
         </span>
       </button>
 
@@ -77,10 +76,10 @@ export function TopBar() {
 	          onClick={() => preloadAllMail(undefined, 'full')}
 	          className="px-2 py-1.5 rounded-lg transition-colors duration-100 hover:bg-[var(--bg-hover)] text-[11px]"
 	          style={{ color: 'var(--text-muted)' }}
-	          title="Preload all mailboxes"
-	          aria-label="Preload all mailboxes"
-	        >
-	          Preload
+		          title="Build local mail cache"
+		          aria-label="Build local mail cache"
+		        >
+		          Cache mail
 	        </button>
 
         {/* Shortcuts */}

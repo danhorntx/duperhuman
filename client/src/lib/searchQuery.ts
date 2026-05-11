@@ -21,6 +21,7 @@ export interface ParsedQuery {
     to?: string
     in?:   string
     has?: string
+    is?: string
     before?: string
     after?: string
   }
@@ -28,7 +29,7 @@ export interface ParsedQuery {
   raw:     string
 }
 
-const OPERATOR_RE = /\b(from|to|in|has|before|after):(?:"([^"]*)"|(\S+))/gi
+const OPERATOR_RE = /\b(from|to|in|has|is|before|after):(?:"([^"]*)"|(\S+))/gi
 
 export function parseQuery(raw: string): ParsedQuery {
   const operators: ParsedQuery['operators'] = {}
@@ -58,7 +59,7 @@ export function parseQuery(raw: string): ParsedQuery {
  *   - null — not inside any operator value
  */
 export interface ActiveOperator {
-	  operator: 'from' | 'to' | 'in' | 'has' | 'before' | 'after'
+	  operator: 'from' | 'to' | 'in' | 'has' | 'is' | 'before' | 'after'
   partial:  string
   start:    number    // index of the operator keyword in the raw string
   end:      number    // index past the partial value
@@ -68,7 +69,7 @@ export function getActiveOperator(raw: string, cursor: number): ActiveOperator |
   // Look backward from cursor for the most recent `from:` or `in:` that the
   // cursor sits inside.
   const slice = raw.slice(0, cursor)
-  const m = slice.match(/(?:^|\s)(from|to|in|has|before|after):([^\s"]*)$/i)
+  const m = slice.match(/(?:^|\s)(from|to|in|has|is|before|after):([^\s"]*)$/i)
   if (!m) return null
 
   const operator = m[1].toLowerCase() as ActiveOperator['operator']
@@ -127,6 +128,15 @@ export function filterEmailsByQuery(
       } else if (tok === 'unread') {
         if (e.isRead) return false
       }
+    }
+
+    if (operators.is) {
+      const tok = operators.is.toLowerCase()
+      if ((tok === 'unread' || tok === 'unseen') && e.isRead) return false
+      if (tok === 'read' && !e.isRead) return false
+      if ((tok === 'starred' || tok === 'flagged') && !e.isStarred) return false
+      if (tok === 'snoozed' && !(e.snoozedUntil && e.snoozedUntil > 0)) return false
+      if ((tok === 'archived' || tok === 'done') && !e.isArchived) return false
     }
 
     if (operators.before) {

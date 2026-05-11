@@ -4,12 +4,12 @@ import {
   MagnifyingGlassIcon, ArrowBendUpLeftIcon, PaperPlaneRightIcon,
   ArchiveIcon, TrashIcon, StarIcon, ClockIcon, TrayIcon,
   EnvelopeIcon, ArrowBendDoubleUpLeftIcon, ArrowBendUpRightIcon,
-  ArrowUpIcon, FolderIcon, UserIcon, TagIcon,
+  ArrowUpIcon, FolderIcon, UserIcon, TagIcon, FunnelIcon,
 } from '@phosphor-icons/react'
-import { useEmailStore, selectActiveState } from '@/store/emailStore'
+import { INBOX_SPLITS, useEmailStore, selectActiveState } from '@/store/emailStore'
 import { useUiStore } from '@/store/uiStore'
 import { useLabelsStore } from '@/store/labelsStore'
-import { localSearch } from '@/lib/search'
+import { searchLocalEmails } from '@/lib/search'
 import { parseQuery, getActiveOperator } from '@/lib/searchQuery'
 import { getContacts, filterContacts, type RankedContact } from '@/lib/contacts'
 import { createFollowUp } from '@/lib/localWorkflow'
@@ -38,7 +38,7 @@ function useCommands(): Command[] {
   const commands: Command[] = [
     { id: 'compose', label: 'Compose new email', icon: <EnvelopeIcon size={15} />, shortcut: 'C', category: 'compose', run: () => ui.openCompose() },
     { id: 'reply',     label: 'Reply',       icon: <ArrowBendUpLeftIcon size={15} />,       shortcut: 'R', category: 'compose', run: () => selectedId && ui.openCompose({ replyToId: selectedId }) },
-    { id: 'reply-all', label: 'Reply all',   icon: <ArrowBendDoubleUpLeftIcon size={15} />, shortcut: 'A', category: 'compose', run: () => selectedId && ui.openCompose({ replyToId: selectedId }) },
+    { id: 'reply-all', label: 'Reply all',   icon: <ArrowBendDoubleUpLeftIcon size={15} />, shortcut: 'A', category: 'compose', run: () => selectedId && ui.openCompose({ replyToId: selectedId, replyAll: true }) },
     { id: 'forward',   label: 'Forward',     icon: <ArrowBendUpRightIcon size={15} />,      shortcut: 'F', category: 'compose', run: () => selectedId && ui.openCompose({ forwardId: selectedId }) },
     { id: 'archive',   label: 'Archive',     icon: <ArchiveIcon size={15} />,               shortcut: 'E', category: 'action',  run: () => { store.archiveEmail(); ui.toast('Archived', { action: { label: 'Undo', fn: () => store.undoLast() } }) } },
     { id: 'delete',    label: 'Delete',      icon: <TrashIcon size={15} />,                 shortcut: '#', category: 'action',  run: () => { store.deleteEmail(); ui.toast('Deleted', { action: { label: 'Undo', fn: () => store.undoLast() } }) } },
@@ -49,6 +49,8 @@ function useCommands(): Command[] {
     { id: 'go-inbox',  label: 'Go to Inbox',   icon: <TrayIcon size={15} />,                shortcut: 'G I', category: 'navigate', run: () => store.setActiveFolder('INBOX') },
     { id: 'go-starred',label: 'Go to Starred', icon: <StarIcon size={15} />,                shortcut: 'G S', category: 'navigate', run: () => store.setActiveFolder('Starred') },
     { id: 'go-sent',   label: 'Go to Sent',    icon: <PaperPlaneRightIcon size={15} />,     shortcut: 'G T', category: 'navigate', run: () => store.setActiveFolder('Sent') },
+    { id: 'go-drafts', label: 'Go to Drafts',  icon: <FolderIcon size={15} />,              shortcut: 'G D', category: 'navigate', run: () => store.setActiveFolder('Drafts') },
+    { id: 'search',    label: 'Search inbox',  sublabel: 'Open full search', icon: <MagnifyingGlassIcon size={15} />, shortcut: '/', category: 'navigate', run: () => ui.openSearchView('') },
     { id: 'manage-labels', label: 'Manage labels & rules', icon: <TagIcon size={15} />,     shortcut: 'L', category: 'navigate', run: () => ui.openLabelManager() },
   ]
 
@@ -62,21 +64,48 @@ function useCommands(): Command[] {
       category: 'navigate' as const,
       run: () => store.setActiveAccount(account.id),
     })),
+    ...INBOX_SPLITS.map(split => ({
+      id: `split-${split.id}`,
+      label: `Open ${split.label} split`,
+      sublabel: 'Split Inbox',
+      icon: <FunnelIcon size={15} />,
+      shortcut: split.shortcut,
+      category: 'navigate' as const,
+      run: () => store.setActiveSplit(split.id),
+    })),
   ]
 }
 
 const SYSTEM_FOLDERS = ['INBOX', 'Sent', 'Drafts', 'Starred', 'Snoozed', 'Trash', 'Spam', 'Archive']
+const FILTER_OPTIONS = ['unread', 'read', 'starred', 'snoozed', 'archived', 'attachment']
 
 // ─── Fuzzy filter ─────────────────────────────────────────────────────────────
 
 function filterCommands(commands: Command[], query: string): Command[] {
   if (!query) return commands
   const q = query.toLowerCase()
-  return commands.filter(c =>
-    c.label.toLowerCase().includes(q) ||
-    c.sublabel?.toLowerCase().includes(q) ||
-    c.category.includes(q)
-  )
+  return commands
+    .map(command => ({
+      command,
+      score: fuzzyScore(`${command.label} ${command.sublabel ?? ''} ${command.category} ${command.shortcut ?? ''}`, q),
+    }))
+    .filter(item => item.score > 0)
+    .sort((a, b) => b.score - a.score || a.command.label.localeCompare(b.command.label))
+    .map(item => item.command)
+}
+
+function fuzzyScore(value: string, query: string): number {
+  const text = value.toLowerCase()
+  if (text.includes(query)) return 100 + query.length
+  let score = 0
+  let qi = 0
+  for (let i = 0; i < text.length && qi < query.length; i++) {
+    if (text[i] === query[qi]) {
+      score += text[i - 1] === ' ' ? 8 : 4
+      qi += 1
+    }
+  }
+  return qi === query.length ? score : 0
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -85,7 +114,6 @@ export function CommandPalette() {
   const open  = useUiStore(s => s.commandPaletteOpen)
   const close = useUiStore(s => s.closeCommandPalette)
   const openSearch = useUiStore(s => s.openSearchView)
-  const emails = useEmailStore(s => selectActiveState(s).emails)
   const account = useEmailStore(s => s.getActiveAccount())
   const labels  = useLabelsStore(s => s.labels)
 
@@ -144,43 +172,37 @@ export function CommandPalette() {
               ? <span className="w-3 h-3 rounded-sm" style={{ background: o.color }} />
               : <FolderIcon size={13} />,
           }))
+      : active?.operator === 'is' || active?.operator === 'has'
+      ? FILTER_OPTIONS
+          .filter(option => option.includes(active.partial.toLowerCase()))
+          .slice(0, 10)
+          .map(option => ({
+            kind: 'folder' as const,
+            display: option,
+            insert: option,
+            icon: <FunnelIcon size={13} />,
+          }))
       : []
 
   // ─ Live email matching
   useEffect(() => {
     if (!query.trim() || active) { setEmailResults([]); return }
-    // Use either MiniSearch (free-text) OR run the parsed query against current view
-    const parsed = parseQuery(query)
-    if (parsed.operators.from || parsed.operators.in) {
-      const filtered = emails
-        .filter(e => {
-          if (parsed.operators.from && !`${e.from.address} ${e.from.name}`.toLowerCase().includes(parsed.operators.from!.toLowerCase())) return false
-          if (parsed.operators.in) {
-            const tok = parsed.operators.in.toLowerCase()
-            const lbl = labels.find(l => l.name.toLowerCase() === tok)
-            if (lbl) {
-              if (!e.labels.includes(lbl.id)) return false
-            } else if (e.folder.toLowerCase() !== tok) {
-              return false
-            }
-          }
-          if (parsed.freeText) {
-            const hay = `${e.subject} ${e.from.name} ${e.from.address} ${e.snippet} ${e.bodyText}`.toLowerCase()
-            if (!hay.includes(parsed.freeText.toLowerCase())) return false
-          }
-          return true
-        })
-        .slice(0, 5)
-      setEmailResults(filtered)
-    } else {
-      const ids = localSearch(query, 5)
-      const results = ids.flatMap(id => {
-        const e = emails.find(em => em.id === id)
-        return e ? [e] : []
-      })
-      setEmailResults(results)
+    let cancelled = false
+    const folderResolver = (token: string) => {
+      const tok = token.toLowerCase()
+      const lbl = labels.find(l => l.name.toLowerCase() === tok)
+      if (lbl) return (email: Email) => email.labels.includes(lbl.id)
+      return (email: Email) => email.folder.toLowerCase() === tok
     }
-  }, [query, emails, labels, active])
+    searchLocalEmails(query, {
+      accountId: account?.id ?? null,
+      limit: 5,
+      folderResolver,
+    }).then(results => {
+      if (!cancelled) setEmailResults(results)
+    })
+    return () => { cancelled = true }
+  }, [query, labels, active, account?.id])
 
   const filteredCommands = active ? [] : filterCommands(commands, query)
 
@@ -257,6 +279,7 @@ export function CommandPalette() {
   if (parsed.operators.to)   chips.push({ label: `to: ${parsed.operators.to}`, key: 'to' })
   if (parsed.operators.in)   chips.push({ label: `in: ${parsed.operators.in}`, key: 'in' })
   if (parsed.operators.has)  chips.push({ label: `has: ${parsed.operators.has}`, key: 'has' })
+  if (parsed.operators.is)   chips.push({ label: `is: ${parsed.operators.is}`, key: 'is' })
 
   return (
     <AnimatePresence>
@@ -295,7 +318,7 @@ export function CommandPalette() {
                 type="text"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                placeholder="Search emails… try from: or in:"
+                placeholder="Search emails or run a command… try is:unread"
                 className="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none"
               />
               {query && (

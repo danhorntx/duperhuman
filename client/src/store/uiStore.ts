@@ -7,6 +7,8 @@ import { generateId } from '@/lib/utils'
 interface PersistedSettings {
   composeFullScreen: boolean
   replyFullScreen:   boolean
+  automaticallyLoadImages: boolean
+  emailPreviewTheme: 'light' | 'dark'
   sidebarWidth:      number   // user's preferred width when expanded
   sidebarCollapsed:  boolean
 }
@@ -42,6 +44,8 @@ function defaultSettings(): PersistedSettings {
   return {
     composeFullScreen: true,
     replyFullScreen:   true,
+    automaticallyLoadImages: false,
+    emailPreviewTheme: 'light',
     sidebarWidth:      SIDEBAR_DEFAULT,
     sidebarCollapsed:  false,
   }
@@ -59,6 +63,7 @@ interface UiStore {
   snoozeModalOpen: boolean
   labelDialogOpen: boolean
   searchMode: boolean
+  keyHint: string | null
 
   // ─ Top-level view
   view: AppView
@@ -71,6 +76,7 @@ interface UiStore {
   // ─ Compose state
   composeReplyToId: string | null
   composeForwardId: string | null
+  composeReplyAll: boolean
 
   // ─ Persisted user preferences
   settings: PersistedSettings
@@ -83,7 +89,7 @@ interface UiStore {
   openShortcuts: () => void
   closeShortcuts: () => void
 
-  openCompose: (opts?: { replyToId?: string; forwardId?: string }) => void
+  openCompose: (opts?: { replyToId?: string; forwardId?: string; replyAll?: boolean }) => void
   closeCompose: () => void
 
   openSnoozeModal: () => void
@@ -93,6 +99,7 @@ interface UiStore {
   closeLabelDialog: () => void
 
   setSearchMode: (on: boolean) => void
+  setKeyHint: (hint: string | null) => void
 
   openSearchView:  (query: string) => void
   openLabelManager:(labelId?: string | null) => void
@@ -116,6 +123,7 @@ export const useUiStore = create<UiStore>((set, get) => ({
   snoozeModalOpen: false,
   labelDialogOpen: false,
   searchMode: false,
+  keyHint: null,
 
   view: 'mail',
   searchQuery: '',
@@ -124,6 +132,7 @@ export const useUiStore = create<UiStore>((set, get) => ({
   toasts: [],
   composeReplyToId: null,
   composeForwardId: null,
+  composeReplyAll: false,
 
   settings: loadSettings(),
 
@@ -134,14 +143,15 @@ export const useUiStore = create<UiStore>((set, get) => ({
   openShortcuts: () => set({ shortcutsOverlayOpen: true }),
   closeShortcuts: () => set({ shortcutsOverlayOpen: false }),
 
-  openCompose: (opts) =>
+	  openCompose: (opts) =>
     set({
       composeOpen: true,
       composeReplyToId: opts?.replyToId ?? null,
       composeForwardId: opts?.forwardId ?? null,
+      composeReplyAll: opts?.replyAll ?? false,
     }),
   closeCompose: () =>
-    set({ composeOpen: false, composeReplyToId: null, composeForwardId: null }),
+    set({ composeOpen: false, composeReplyToId: null, composeForwardId: null, composeReplyAll: false }),
 
   openSnoozeModal: () => set({ snoozeModalOpen: true }),
   closeSnoozeModal: () => set({ snoozeModalOpen: false }),
@@ -150,6 +160,7 @@ export const useUiStore = create<UiStore>((set, get) => ({
   closeLabelDialog: () => set({ labelDialogOpen: false }),
 
   setSearchMode: (on) => set({ searchMode: on }),
+  setKeyHint: (hint) => set({ keyHint: hint }),
 
   openSearchView:   (query) => set({ view: 'search', searchQuery: query, commandPaletteOpen: false }),
   openLabelManager: (labelId = null) => set({ view: 'label-manager', managingLabelId: labelId, commandPaletteOpen: false }),

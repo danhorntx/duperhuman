@@ -9,7 +9,7 @@ import { SnippetManager } from '@/components/snippets/SnippetManager'
 import { generateId } from '@/lib/utils'
 import type { CustomLabel, LabelRule, RuleField, RuleOperator, RuleConjunction } from '@/types/email'
 
-const LABEL_COLORS = ['#cbb7fb', '#7c5cbf', '#5b7eb8', '#4e9e7a', '#b87c4e', '#b85e6b', '#6e8cb8', '#9b7ab5']
+const LABEL_COLORS = ['#8fb3ff', '#64b5a1', '#e0b45d', '#d77b8a', '#8ba3b8', '#a6b36b', '#c08a5a', '#7cb7d8']
 
 export function LabelManager() {
   const back            = useUiStore(s => s.openMailView)
@@ -179,6 +179,25 @@ function SettingsPanel() {
           onChange={v => setSetting('replyFullScreen', v)}
         />
       </SettingGroup>
+
+      <SettingGroup title="Reading">
+        <SettingToggle
+          label="Automatically load images in HTML emails"
+          description="Show remote images as soon as a message opens."
+          value={settings.automaticallyLoadImages}
+          onChange={v => setSetting('automaticallyLoadImages', v)}
+        />
+        <SettingChoice
+          label="Default email preview theme"
+          description="Choose the starting appearance for HTML email previews."
+          value={settings.emailPreviewTheme}
+          options={[
+            { label: 'Light', value: 'light' },
+            { label: 'Dark', value: 'dark' },
+          ]}
+          onChange={v => setSetting('emailPreviewTheme', v)}
+        />
+      </SettingGroup>
     </div>
   )
 }
@@ -224,11 +243,53 @@ function SettingToggle({ label, description, value, onChange }: {
           className="absolute top-0.5 w-3.5 h-3.5 rounded-full transition-all"
           style={{
             left: value ? 'calc(100% - 18px)' : '2px',
-            background: value ? '#1a0617' : 'var(--text-muted)',
+            background: value ? 'var(--accent-contrast)' : 'var(--text-muted)',
           }}
         />
       </div>
     </button>
+  )
+}
+
+function SettingChoice<T extends string>({ label, description, value, options, onChange }: {
+  label: string
+  description: string
+  value: T
+  options: { label: string; value: T }[]
+  onChange: (v: T) => void
+}) {
+  return (
+    <div
+      className="w-full flex items-start justify-between gap-4 px-4 py-3"
+      style={{ borderBottom: '1px solid var(--border-subtle)' }}
+    >
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-[var(--text-primary)]">{label}</div>
+        <div className="text-xs text-[var(--text-muted)] mt-0.5">{description}</div>
+      </div>
+      <div
+        className="flex flex-shrink-0 rounded-lg p-0.5"
+        style={{ background: 'var(--bg-hover)', border: '1px solid var(--border-subtle)' }}
+      >
+        {options.map(option => {
+          const selected = option.value === value
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
+              className="px-2.5 py-1 rounded-md text-xs font-medium transition-colors"
+              style={{
+                background: selected ? 'var(--accent)' : 'transparent',
+                color: selected ? 'var(--accent-contrast)' : 'var(--text-muted)',
+              }}
+            >
+              {option.label}
+            </button>
+          )
+        })}
+      </div>
+    </div>
   )
 }
 
@@ -298,7 +359,7 @@ function LabelEditor({ label }: { label: CustomLabel }) {
           <button
             onClick={save}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium"
-            style={{ background: 'var(--accent)', color: '#1a0617' }}
+            style={{ background: 'var(--accent)', color: 'var(--accent-contrast)' }}
           >
             <CheckIcon size={12} weight="bold" /> Save
           </button>

@@ -6,6 +6,7 @@ import type { Email } from '@/types/email'
 
 interface EmailRowProps {
   email: Email
+  id?: string
   isFocused: boolean
   isSelected: boolean
   style: React.CSSProperties
@@ -18,16 +19,18 @@ interface EmailRowProps {
  * email data, focus, or selection state changes — critical for the 200+ row case.
  */
 export const EmailRow = memo(function EmailRow({
-  email, isFocused, isSelected, style, onClick, onStar,
+  email, id, isFocused, isSelected, style, onClick, onStar,
 }: EmailRowProps) {
   return (
     <div
-      role="row"
+      role="option"
+      id={id}
       aria-selected={isSelected}
+      tabIndex={isFocused ? 0 : -1}
       style={style}
       onClick={onClick}
       className={[
-        'email-row',
+        'email-row group',
         !email.isRead ? 'unread' : '',
         isFocused ? 'focused' : '',
         isSelected ? 'selected' : '',
@@ -97,7 +100,7 @@ export const EmailRow = memo(function EmailRow({
           onClick={onStar}
           aria-label={email.isStarred ? 'Unstar' : 'Star'}
           className="p-0.5 rounded transition-opacity duration-100 opacity-0 group-hover:opacity-100"
-          style={{ color: email.isStarred ? '#cbb7fb' : 'var(--text-disabled)' }}
+          style={{ color: email.isStarred ? 'var(--accent)' : 'var(--text-disabled)' }}
         >
           <StarIcon
             size={12}
@@ -108,8 +111,9 @@ export const EmailRow = memo(function EmailRow({
     </div>
   )
 }, (prev, next) =>
-  prev.email === next.email &&
+	  prev.email === next.email &&
+  prev.id === next.id &&
   prev.isFocused === next.isFocused &&
   prev.isSelected === next.isSelected &&
-  prev.style.top === next.style.top
+  prev.style.height === next.style.height
 )

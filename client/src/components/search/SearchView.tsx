@@ -5,11 +5,11 @@ import {
 import { useUiStore } from '@/store/uiStore'
 import { useEmailStore, selectActiveState } from '@/store/emailStore'
 import { useLabelsStore } from '@/store/labelsStore'
-import { db } from '@/db/db'
 import { Avatar } from '@/components/ui/Avatar'
 import { EmailThread } from '@/components/email/EmailThread'
-import { parseQuery, filterEmailsByQuery } from '@/lib/searchQuery'
-import { displayName, formatEmailDate, truncate } from '@/lib/utils'
+import { parseQuery } from '@/lib/searchQuery'
+import { searchLocalEmails } from '@/lib/search'
+import { displayName, formatEmailDate, isInputFocused, truncate } from '@/lib/utils'
 import type { Email } from '@/types/email'
 
 const PAGE_SIZE = 50
@@ -48,15 +48,20 @@ export function SearchView() {
   // is filtered by folder — search must span the whole account.
   useEffect(() => {
     let cancelled = false
+    if (!query.trim()) {
+      setAllMatches([])
+      setPage(1)
+      setLoading(false)
+      return
+    }
     setLoading(true)
     setPage(1)
     ;(async () => {
-      const aid = account?.id
-      const allLocal = aid
-        ? await db.emails.where('accountId').equals(aid).toArray()
-        : await db.emails.toArray()
-      const filtered = filterEmailsByQuery(allLocal, parsed, folderResolver)
-        .sort((a, b) => b.date - a.date)
+      const filtered = await searchLocalEmails(query, {
+        accountId: account?.id ?? null,
+        limit: 500,
+        folderResolver,
+      })
       if (!cancelled) {
         setAllMatches(filtered)
         setLoading(false)
@@ -93,10 +98,30 @@ export function SearchView() {
     if (draft.trim()) setQuery(draft.trim())
   }
 
-  const onPick = (id: string, isRead: boolean) => {
+	  const onPick = (id: string, isRead: boolean) => {
     selectEmail(id)
     if (!isRead) markRead(id, true)
-  }
+	  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (isInputFocused()) return
+      if (e.key === 'j' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        const current = Math.max(0, allMatches.findIndex(email => email.id === selectedId))
+        const next = allMatches[Math.min(current + 1, allMatches.length - 1)]
+        if (next) onPick(next.id, next.isRead)
+      }
+      if (e.key === 'k' || e.key === 'ArrowUp') {
+        e.preventDefault()
+        const current = Math.max(0, allMatches.findIndex(email => email.id === selectedId))
+        const next = allMatches[Math.max(current - 1, 0)]
+        if (next) onPick(next.id, next.isRead)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [allMatches, selectedId, selectEmail, markRead])
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -140,9 +165,12 @@ export function SearchView() {
 	            {parsed.operators.in && (
 	              <FilterChip label={`in: ${parsed.operators.in}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'in'))} />
 	            )}
-	            {parsed.operators.has && (
-	              <FilterChip label={`has: ${parsed.operators.has}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'has'))} />
-	            )}
+		            {parsed.operators.has && (
+		              <FilterChip label={`has: ${parsed.operators.has}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'has'))} />
+		            )}
+            {parsed.operators.is && (
+              <FilterChip label={`is: ${parsed.operators.is}`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'is'))} />
+            )}
             {parsed.freeText && (
               <FilterChip label={`"${parsed.freeText}"`} onRemove={() => setQuery(rebuildQueryWithout(parsed, 'freeText'))} />
             )}
@@ -159,6 +187,11 @@ export function SearchView() {
         >
           {loading ? (
             <div className="px-6 py-12 text-center text-sm text-[var(--text-muted)]">Searching…</div>
+          ) : !query.trim() ? (
+            <div className="px-6 py-20 text-center">
+              <p className="text-sm text-[var(--text-secondary)] mb-1">Search your mail</p>
+              <p className="text-xs text-[var(--text-muted)]">Try from:, in:, has:attachment, or is:unread.</p>
+            </div>
           ) : allMatches.length === 0 ? (
             <div className="px-6 py-20 text-center">
               <p className="text-sm text-[var(--text-secondary)] mb-1">No emails match this search</p>
@@ -275,7 +308,7 @@ function FilterChip({ label, onRemove }: { label: string; onRemove: () => void }
   )
 }
 
-function rebuildQueryWithout(parsed: ReturnType<typeof parseQuery>, drop: 'from' | 'to' | 'in' | 'has' | 'freeText'): string {
+function rebuildQueryWithout(parsed: ReturnType<typeof parseQuery>, drop: 'from' | 'to' | 'in' | 'has' | 'is' | 'freeText'): string {
   const parts: string[] = []
   if (drop !== 'from' && parsed.operators.from) {
     const v = parsed.operators.from
@@ -289,7 +322,8 @@ function rebuildQueryWithout(parsed: ReturnType<typeof parseQuery>, drop: 'from'
     const v = parsed.operators.in
     parts.push(`in:${v.includes(' ') ? `"${v}"` : v}`)
   }
-  if (drop !== 'has' && parsed.operators.has) parts.push(`has:${parsed.operators.has}`)
+	  if (drop !== 'has' && parsed.operators.has) parts.push(`has:${parsed.operators.has}`)
+  if (drop !== 'is' && parsed.operators.is) parts.push(`is:${parsed.operators.is}`)
   if (drop !== 'freeText' && parsed.freeText) parts.push(parsed.freeText)
   return parts.join(' ')
 }

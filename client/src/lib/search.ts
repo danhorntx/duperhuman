@@ -1,4 +1,6 @@
 import MiniSearch from 'minisearch'
+import { db } from '@/db/db'
+import { filterEmailsByQuery, parseQuery } from '@/lib/searchQuery'
 import type { Email } from '@/types/email'
 
 // ─── Local full-text index (MiniSearch / IndexedDB-backed) ───────────────────
@@ -81,6 +83,45 @@ export function localSearch(query: string, limit = 20): string[] {
     .search(query)
     .slice(0, limit)
     .map(r => r.id as string)
+}
+
+export async function searchLocalEmails(
+  rawQuery: string,
+  opts: {
+    accountId?: string | null
+    limit?: number
+    folderResolver?: (folderToken: string) => (email: Email) => boolean
+  } = {},
+): Promise<Email[]> {
+  const parsed = parseQuery(rawQuery)
+  const limit = opts.limit ?? 100
+  const allLocal = opts.accountId
+    ? await db.emails.where('accountId').equals(opts.accountId).toArray()
+    : await db.emails.toArray()
+
+  buildIndex(allLocal)
+
+  if (!parsed.freeText) {
+    return filterEmailsByQuery(allLocal, parsed, opts.folderResolver)
+      .sort((a, b) => b.date - a.date)
+      .slice(0, limit)
+  }
+
+  const rankedIds = localSearch(parsed.freeText, Math.max(limit * 6, 240))
+  const rank = new Map(rankedIds.map((id, index) => [id, index]))
+  const candidates = (await db.emails.bulkGet(rankedIds))
+    .filter((email): email is Email => !!email && (!opts.accountId || email.accountId === opts.accountId))
+
+  let filtered = filterEmailsByQuery(candidates, parsed, opts.folderResolver)
+    .sort((a, b) => (rank.get(a.id) ?? 9999) - (rank.get(b.id) ?? 9999) || b.date - a.date)
+
+  const hasStructuredOperators = Object.values(parsed.operators).some(Boolean)
+  if (hasStructuredOperators && filtered.length < limit) {
+    filtered = filterEmailsByQuery(allLocal, parsed, opts.folderResolver)
+      .sort((a, b) => b.date - a.date)
+  }
+
+  return filtered.slice(0, limit)
 }
 
 export function clearIndex() {

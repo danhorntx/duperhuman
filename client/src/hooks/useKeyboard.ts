@@ -9,10 +9,13 @@ import { isInputFocused } from '@/lib/utils'
 let pendingKey: string | null = null
 let pendingTimer: ReturnType<typeof setTimeout> | null = null
 
-function setPending(key: string) {
+function setPending(key: string, onExpire?: () => void) {
   if (pendingTimer) clearTimeout(pendingTimer)
   pendingKey = key
-  pendingTimer = setTimeout(() => { pendingKey = null }, 500)
+  pendingTimer = setTimeout(() => {
+    pendingKey = null
+    onExpire?.()
+  }, 500)
 }
 
 function consumePending(): string | null {
@@ -20,6 +23,20 @@ function consumePending(): string | null {
   pendingKey = null
   if (pendingTimer) clearTimeout(pendingTimer)
   return k
+}
+
+function scrollEmailPreview(direction: 1 | -1) {
+  const pane = document.querySelector<HTMLElement>('[data-email-preview-scroll]')
+  if (!pane) return false
+
+  const step = Math.max(160, Math.min(420, Math.round(pane.clientHeight * 0.6)))
+  pane.scrollBy({ top: direction * step, behavior: 'smooth' })
+  return true
+}
+
+function moveListBy(store: ReturnType<typeof useEmailStore.getState>, count: number) {
+  const move = count > 0 ? store.focusNext : store.focusPrev
+  for (let i = 0; i < Math.abs(count); i += 1) move()
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────
@@ -65,6 +82,7 @@ export function useGlobalKeyboard() {
 
     // ─── Two-key sequences ────────────────────────────────────────────────
     const prev = consumePending()
+    if (prev) ui.setKeyHint(null)
     if (prev === 'g') {
       switch (key) {
         case 'i': store.setActiveFolder('INBOX'); return
@@ -76,11 +94,29 @@ export function useGlobalKeyboard() {
       }
     }
 
-    // ─── Single key shortcuts ─────────────────────────────────────────────
-    switch (key) {
-      // Navigation
-      case 'j': store.focusNext(); break
+	    // ─── Single key shortcuts ─────────────────────────────────────────────
+	    switch (key) {
+      case ' ': {
+        e.preventDefault()
+        scrollEmailPreview(e.shiftKey ? -1 : 1)
+        break
+      }
+      case 'Tab': {
+        e.preventDefault()
+        if (e.shiftKey) store.focusPrevSplit()
+        else store.focusNextSplit()
+        break
+      }
+      case '1': store.setActiveSplit('all'); break
+      case '2': store.setActiveSplit('important'); break
+      case '3': store.setActiveSplit('other'); break
+      case '4': store.setActiveSplit('calendar'); break
+      case '5': store.setActiveSplit('news'); break
+	      // Navigation
+	      case 'j': store.focusNext(); break
       case 'k': store.focusPrev(); break
+      case 'J': moveListBy(store, 6); break
+      case 'K': moveListBy(store, -6); break
       case 'Enter': store.openFocused(); break
       case 'u': store.selectEmail(null); break
 
@@ -125,11 +161,11 @@ export function useGlobalKeyboard() {
         if (sel) ui.openCompose({ replyToId: sel })
         break
       }
-      case 'a': {
-        const sel = selectedId
-        if (sel) ui.openCompose({ replyToId: sel })
-        break
-      }
+	      case 'a': {
+	        const sel = selectedId
+	        if (sel) ui.openCompose({ replyToId: sel, replyAll: true })
+	        break
+	      }
       case 'f': {
         const sel = selectedId
         if (sel) ui.openCompose({ forwardId: sel })
@@ -137,17 +173,20 @@ export function useGlobalKeyboard() {
       }
 
       // Search
-      case '/': {
-        e.preventDefault()
-        ui.openCommandPalette()
-        break
-      }
+	      case '/': {
+	        e.preventDefault()
+	        ui.openSearchView('')
+	        break
+	      }
 
       // Help
       case '?': ui.openShortcuts(); break
 
       // g prefix
-      case 'g': setPending('g'); break
+	      case 'g':
+          ui.setKeyHint('g')
+          setPending('g', () => useUiStore.getState().setKeyHint(null))
+          break
 
       default: break
     }

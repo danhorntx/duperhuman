@@ -6,12 +6,13 @@ import {
 } from '@phosphor-icons/react'
 import DOMPurify from 'dompurify'
 import { useUiStore } from '@/store/uiStore'
-import { useEmailStore, selectSelectedEmail } from '@/store/emailStore'
+import { useEmailStore } from '@/store/emailStore'
 import { SnippetPicker } from '@/components/snippets/SnippetPicker'
 import { getContacts, filterContacts, type RankedContact } from '@/lib/contacts'
 import { queueEmail, processOutbox } from '@/lib/outbox'
+import { generateId } from '@/lib/utils'
 import { db } from '@/db/db'
-import type { Snippet } from '@/types/email'
+import type { Email, EmailAddress, Snippet } from '@/types/email'
 
 // `;` opens the snippet picker. Tracked at module scope per ComposeWindow
 // instance via React state below.
@@ -28,6 +29,22 @@ function escapeHtml(value: string): string {
 }
 
 interface Recipient { name: string; address: string; raw: string }
+
+function toRecipient(address: EmailAddress): Recipient {
+  return { name: address.name, address: address.address, raw: address.address }
+}
+
+function uniqueRecipients(addresses: EmailAddress[], exclude: string[] = []): Recipient[] {
+  const seen = new Set(exclude.map(addr => addr.toLowerCase()))
+  const out: Recipient[] = []
+  for (const address of addresses) {
+    const key = address.address.toLowerCase()
+    if (!address.address || seen.has(key)) continue
+    seen.add(key)
+    out.push(toRecipient(address))
+  }
+  return out
+}
 
 interface RecipientFieldHandle {
   focus: () => void
@@ -206,10 +223,9 @@ const RecipientField = forwardRef<RecipientFieldHandle, {
 })
 
 export function ComposeWindow() {
-  const { composeOpen, composeReplyToId, composeForwardId, closeCompose, toast } = useUiStore()
+  const { composeOpen, composeReplyToId, composeForwardId, composeReplyAll, closeCompose, toast } = useUiStore()
   const settings = useUiStore(s => s.settings)
   const setSetting = useUiStore(s => s.setSetting)
-  const replyToEmail = useEmailStore(selectSelectedEmail)
   const getActiveAccount = useEmailStore(s => s.getActiveAccount)
   const activeAccount = getActiveAccount()
 
@@ -224,8 +240,13 @@ export function ComposeWindow() {
 
   const [to, setTo] = useState<Recipient[]>([])
   const [cc, setCc] = useState<Recipient[]>([])
+  const [bcc, setBcc] = useState<Recipient[]>([])
   const [showCc, setShowCc] = useState(false)
+  const [showBcc, setShowBcc] = useState(false)
   const [subject, setSubject] = useState('')
+  const [sourceEmail, setSourceEmail] = useState<Email | null>(null)
+  const [draftKey, setDraftKey] = useState<string | null>(null)
+  const draftKeyRef = useRef<string | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const toFieldRef = useRef<RecipientFieldHandle>(null)
   const [sending, setSending] = useState(false)
@@ -245,55 +266,109 @@ export function ComposeWindow() {
   const triggerRangeRef = useRef<Range | null>(null)
   const triggerStartRef = useRef<{ node: Node; offset: number } | null>(null)
 
+  useEffect(() => {
+    if (!composeOpen) {
+      setSourceEmail(null)
+      setDraftKey(null)
+      draftKeyRef.current = null
+      return
+    }
+    const sourceId = composeReplyToId ?? composeForwardId
+    if (!activeAccount) return
+    draftKeyRef.current = sourceId
+      ? `${activeAccount.id}:${sourceId}`
+      : `${activeAccount.id}:new:${generateId()}`
+    setDraftKey(draftKeyRef.current)
+
+    let cancelled = false
+    ;(async () => {
+      const source = sourceId ? await db.emails.get(sourceId) : null
+      if (!cancelled) setSourceEmail(source ?? null)
+    })()
+    return () => { cancelled = true }
+  }, [composeOpen, composeReplyToId, composeForwardId, activeAccount?.id])
+
   // Pre-fill for replies/forwards/new
   useEffect(() => {
     if (!composeOpen) return
-	    if (composeReplyToId && replyToEmail) {
-	      setTo([{ name: replyToEmail.from.name, address: replyToEmail.from.address, raw: replyToEmail.from.address }])
-	      setSubject(replyToEmail.subject.startsWith('Re:') ? replyToEmail.subject : `Re: ${replyToEmail.subject}`)
+	    if (composeReplyToId && sourceEmail) {
+      const ownAddress = activeAccount?.email ?? ''
+      const baseTo = [sourceEmail.replyTo ?? sourceEmail.from]
+      setTo(composeReplyAll
+        ? uniqueRecipients([...baseTo, ...sourceEmail.to], [ownAddress])
+        : uniqueRecipients(baseTo, [ownAddress]))
+      setCc(composeReplyAll ? uniqueRecipients(sourceEmail.cc, [ownAddress, ...baseTo.map(a => a.address)]) : [])
+      setBcc([])
+      setShowCc(composeReplyAll && sourceEmail.cc.length > 0)
+      setShowBcc(false)
+	      setSubject(sourceEmail.subject.startsWith('Re:') ? sourceEmail.subject : `Re: ${sourceEmail.subject}`)
 	      if (bodyRef.current) {
-	        const quoted = DOMPurify.sanitize(replyToEmail.bodyHtml || escapeHtml(replyToEmail.bodyText))
-	        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)">${quoted}</blockquote>`
+	        const quoted = DOMPurify.sanitize(sourceEmail.bodyHtml || escapeHtml(sourceEmail.bodyText))
+	        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(143,179,255,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(240,241,242,0.6)">${quoted}</blockquote>`
 	      }
-	    } else if (composeForwardId && replyToEmail) {
+	    } else if (composeForwardId && sourceEmail) {
 	      setTo([])
-	      setSubject(replyToEmail.subject.startsWith('Fwd:') ? replyToEmail.subject : `Fwd: ${replyToEmail.subject}`)
+      setCc([])
+      setBcc([])
+      setShowCc(false)
+      setShowBcc(false)
+	      setSubject(sourceEmail.subject.startsWith('Fwd:') ? sourceEmail.subject : `Fwd: ${sourceEmail.subject}`)
 	      if (bodyRef.current) {
-	        const quoted = DOMPurify.sanitize(replyToEmail.bodyHtml || escapeHtml(replyToEmail.bodyText))
-	        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(203,183,251,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(232,230,240,0.6)"><strong>Forwarded message:</strong><br/>${quoted}</blockquote>`
+	        const quoted = DOMPurify.sanitize(sourceEmail.bodyHtml || escapeHtml(sourceEmail.bodyText))
+	        bodyRef.current.innerHTML = `<br/><br/><blockquote style="border-left:3px solid rgba(143,179,255,0.25);margin:8px 0;padding:4px 0 4px 16px;color:rgba(240,241,242,0.6)"><strong>Forwarded message:</strong><br/>${quoted}</blockquote>`
 	      }
 	    } else {
 	      setTo([])
 	      setCc([])
+      setBcc([])
+      setShowCc(false)
+      setShowBcc(false)
 	      setSubject('')
 	      if (bodyRef.current) bodyRef.current.innerHTML = ''
 	    }
 	    setScheduledAt(null)
-	  }, [composeOpen, composeReplyToId, composeForwardId, replyToEmail])
+	  }, [composeOpen, composeReplyToId, composeForwardId, composeReplyAll, sourceEmail, activeAccount?.email])
 
   useEffect(() => {
-    if (!composeOpen || !activeAccount) return
-    const draftId = composeReplyToId ?? composeForwardId ?? 'new'
-    const timer = window.setInterval(async () => {
-      const bodyHtml = bodyRef.current?.innerHTML ?? ''
-      if (to.length === 0 && cc.length === 0 && !subject.trim() && !bodyHtml.trim()) return
-      await db.drafts.put({
-        id: `${activeAccount.id}:${draftId}`,
-        accountId: activeAccount.id,
-        replyToId: composeReplyToId ?? undefined,
-        forwardOfId: composeForwardId ?? undefined,
-        to: to.map(r => ({ name: r.name, address: r.address })),
-        cc: cc.map(r => ({ name: r.name, address: r.address })),
-        bcc: [],
-        subject,
+    if (!composeOpen || !draftKey) return
+    let cancelled = false
+    ;(async () => {
+      const draft = await db.drafts.get(draftKey)
+      if (!draft || cancelled) return
+      setTo(draft.to.map(a => ({ ...a, raw: a.address })))
+      setCc((draft.cc ?? []).map(a => ({ ...a, raw: a.address })))
+      setBcc((draft.bcc ?? []).map(a => ({ ...a, raw: a.address })))
+      setShowCc((draft.cc ?? []).length > 0)
+      setShowBcc((draft.bcc ?? []).length > 0)
+      setSubject(draft.subject)
+      setScheduledAt(draft.scheduledSendAt ?? null)
+      if (bodyRef.current) bodyRef.current.innerHTML = DOMPurify.sanitize(draft.bodyHtml)
+    })()
+    return () => { cancelled = true }
+  }, [composeOpen, draftKey])
+
+	  useEffect(() => {
+	    if (!composeOpen || !activeAccount || !draftKey) return
+	    const timer = window.setInterval(async () => {
+	      const bodyHtml = bodyRef.current?.innerHTML ?? ''
+	      if (to.length === 0 && cc.length === 0 && bcc.length === 0 && !subject.trim() && !bodyHtml.trim()) return
+	      await db.drafts.put({
+	        id: draftKey,
+	        accountId: activeAccount.id,
+	        replyToId: composeReplyToId ?? undefined,
+	        forwardOfId: composeForwardId ?? undefined,
+	        to: to.map(r => ({ name: r.name, address: r.address })),
+	        cc: cc.map(r => ({ name: r.name, address: r.address })),
+	        bcc: bcc.map(r => ({ name: r.name, address: r.address })),
+	        subject,
         bodyHtml,
         attachments: [],
         savedAt: Date.now(),
         scheduledSendAt: scheduledAt ?? undefined,
       })
-    }, 2500)
-    return () => window.clearInterval(timer)
-  }, [composeOpen, activeAccount, composeReplyToId, composeForwardId, to, cc, subject, scheduledAt])
+	    }, 2500)
+	    return () => window.clearInterval(timer)
+	  }, [composeOpen, activeAccount, draftKey, composeReplyToId, composeForwardId, to, cc, bcc, subject, scheduledAt])
 
   // Focus the right field after the open animation settles. New compose and
   // forward go to the To input; replies go to the body so the user can start
@@ -325,20 +400,22 @@ export function ComposeWindow() {
 	    const bodyHtml = bodyRef.current?.innerHTML ?? ''
 	    const bodyText = bodyRef.current?.innerText ?? ''
 	    const payload = {
-	      accountId: activeAccount.id,
-	      to: to.map(r => ({ name: r.name, address: r.address })),
-	      cc: cc.map(r => ({ name: r.name, address: r.address })),
-	      subject,
+		      accountId: activeAccount.id,
+		      to: to.map(r => ({ name: r.name, address: r.address })),
+		      cc: cc.map(r => ({ name: r.name, address: r.address })),
+        bcc: bcc.map(r => ({ name: r.name, address: r.address })),
+		      subject,
 	      bodyHtml: DOMPurify.sanitize(bodyHtml),
 	      bodyText,
 	      replyToId: composeReplyToId ?? undefined,
 	      forwardOfId: composeForwardId ?? undefined,
 	    }
 
-	    if (scheduledAt && scheduledAt > Date.now() + 5000) {
-	      await queueEmail(payload, scheduledAt)
-	      toast(`Scheduled for ${new Date(scheduledAt).toLocaleString()}`)
-	      closeCompose()
+		    if (scheduledAt && scheduledAt > Date.now() + 5000) {
+		      await queueEmail(payload, scheduledAt)
+        if (draftKeyRef.current) await db.drafts.delete(draftKeyRef.current)
+		      toast(`Scheduled for ${new Date(scheduledAt).toLocaleString()}`)
+		      closeCompose()
 	      return
 	    }
 
@@ -351,9 +428,10 @@ export function ComposeWindow() {
 	    const timer = window.setTimeout(async () => {
 	      if (undoCancelledRef.current) { undoCancelledRef.current = false; return }
 	      setSending(true)
-	      try {
-	        await queueEmail(payload, Date.now())
-	        await processOutbox()
+		      try {
+		        await queueEmail(payload, Date.now())
+            if (draftKeyRef.current) await db.drafts.delete(draftKeyRef.current)
+		        await processOutbox()
 	        toast('Sent')
       } catch (err) {
         toast('Failed to send — check your connection')
@@ -605,23 +683,35 @@ export function ComposeWindow() {
               onRemove={i => setTo(p => p.filter((_, j) => j !== i))}
             />
 
-            {showCc && (
+	            {showCc && (
+	              <RecipientField
+	                label="Cc" recipients={cc}
+	                accountId={activeAccount?.id ?? null}
+	                onAdd={r => setCc(p => [...p, r])}
+	                onRemove={i => setCc(p => p.filter((_, j) => j !== i))}
+	              />
+	            )}
+
+            {showBcc && (
               <RecipientField
-                label="Cc" recipients={cc}
+                label="Bcc" recipients={bcc}
                 accountId={activeAccount?.id ?? null}
-                onAdd={r => setCc(p => [...p, r])}
-                onRemove={i => setCc(p => p.filter((_, j) => j !== i))}
+                onAdd={r => setBcc(p => [...p, r])}
+                onRemove={i => setBcc(p => p.filter((_, j) => j !== i))}
               />
             )}
 
-            {!showCc && (
-              <button
-                onClick={() => setShowCc(true)}
-                className="text-xs text-[var(--text-muted)] px-4 py-1 hover:text-[var(--text-secondary)] transition-colors text-left flex-shrink-0"
-              >
-                + Cc / Bcc
-              </button>
-            )}
+	            {(!showCc || !showBcc) && (
+	              <button
+	                onClick={() => {
+                  if (!showCc) setShowCc(true)
+                  else setShowBcc(true)
+                }}
+	                className="text-xs text-[var(--text-muted)] px-4 py-1 hover:text-[var(--text-secondary)] transition-colors text-left flex-shrink-0"
+	              >
+	                {!showCc ? '+ Cc' : '+ Bcc'}
+	              </button>
+	            )}
 
             {/* Subject */}
             <div className="px-4 py-2 border-b border-[var(--border-subtle)] flex-shrink-0">
@@ -664,11 +754,11 @@ export function ComposeWindow() {
               onClick={sendEmail}
               disabled={sending || to.length === 0}
               className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all duration-100 disabled:opacity-40"
-              style={{ background: 'var(--accent)', color: '#1a0617' }}
+              style={{ background: 'var(--accent)', color: 'var(--accent-contrast)' }}
             >
               <PaperPlaneRightIcon size={13} weight="bold" />
               {sending ? 'Sending…' : 'Send'}
-              <kbd style={{ background: 'rgba(26,6,23,0.2)', color: '#1a0617', borderColor: 'rgba(26,6,23,0.3)' }}>
+              <kbd style={{ background: 'rgba(11,18,32,0.18)', color: 'var(--accent-contrast)', borderColor: 'rgba(11,18,32,0.28)' }}>
                 ⌘↵
               </kbd>
             </button>
@@ -688,11 +778,13 @@ export function ComposeWindow() {
 	              <ClockIcon size={14} />
 	            </button>
 
-            <button
-              className="p-2 rounded-lg hover:bg-[var(--bg-hover)] transition-colors"
-              style={{ color: 'var(--text-muted)' }}
-              title="Attach file"
-            >
+	            <button
+              type="button"
+              disabled
+	              className="p-2 rounded-lg transition-colors opacity-40 cursor-not-allowed"
+	              style={{ color: 'var(--text-muted)' }}
+	              title="Attachments are read-only for now"
+	            >
               <PaperclipIcon size={14} />
             </button>
           </div>

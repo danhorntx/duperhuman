@@ -40,7 +40,7 @@ function EmptyState({ folder }: { folder: unknown }) {
       >
         <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
           <path d="M17.5 1L7.5 13h5l-1 10 10-12h-5l1-10z"
-            fill="#cbb7fb" stroke="#cbb7fb" strokeWidth="0.5" strokeLinejoin="round" />
+            fill="var(--accent)" stroke="var(--accent)" strokeWidth="0.5" strokeLinejoin="round" />
         </svg>
       </div>
       <div className="text-center">
@@ -96,16 +96,16 @@ export function EmailList() {
       clearTimeout(dwellTimer.current)
       dwellTimer.current = null
     }
-    if (!selectedId) return
-    const target = emails.find(e => e.id === selectedId)
-    if (!target || target.isRead) return
+	    if (!selectedId) return
+	    const target = emails.find(e => e.id === selectedId)
+	    if (!target || target.isRead) return
     dwellTimer.current = setTimeout(() => {
       markRead(selectedId, true)
     }, READ_DWELL_MS)
     return () => {
       if (dwellTimer.current) { clearTimeout(dwellTimer.current); dwellTimer.current = null }
     }
-  }, [selectedId, emails, markRead])
+	  }, [selectedId, emails.find(e => e.id === selectedId)?.isRead, markRead])
 
   // First-paint skeleton — only when truly empty AND something is happening
   if ((isLoading || isSyncing) && emails.length === 0) {
@@ -129,9 +129,10 @@ export function EmailList() {
       <div
         ref={scrollRef}
         className="flex-1 overflow-y-auto overflow-x-hidden"
-        role="listbox"
-        aria-label="Email list"
-      >
+	        role="listbox"
+	        aria-label="Email list"
+          aria-activedescendant={selectedId ? `email-row-${selectedId}` : undefined}
+	      >
         {/* Virtualised spacer */}
         <div style={{ height: totalSize, position: 'relative' }}>
           {virtualItems.map(({ index, start }) => {
@@ -143,7 +144,8 @@ export function EmailList() {
                 style={{ position: 'absolute', top: start, left: 0, right: 0 }}
               >
                 <EmailRow
-                  email={email}
+	                  email={email}
+                    id={`email-row-${email.id}`}
                   isFocused={index === focusedIndex}
                   isSelected={email.id === selectedId}
                   style={{ height: ROW_HEIGHT }}

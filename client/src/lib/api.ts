@@ -6,6 +6,13 @@ export interface MailFolderInfo {
   role?: 'inbox' | 'sent' | 'drafts' | 'trash' | 'spam' | 'starred' | 'archive'
 }
 
+export interface GoogleOAuthStatus {
+  configured: boolean
+  missing: string[]
+  redirectUri: string
+  scopes: string[]
+}
+
 // Dev: Vite proxies /api → :3001 (relative URLs work).
 // Prod (packaged Electron): renderer is served from app://duperhuman/, so we
 // must hit the embedded Fastify server on http://127.0.0.1:3001 explicitly.
@@ -78,6 +85,9 @@ export const accounts = {
 
   folders: (id: string) =>
     request<{ folders: MailFolderInfo[] }>(`/accounts/${encodeURIComponent(id)}/folders`),
+
+  googleStatus: () =>
+    request<GoogleOAuthStatus>('/auth/google/status'),
 
   googleAuthUrl: () => `${BASE || 'http://127.0.0.1:3001'}/api/auth/google/start`,
 }

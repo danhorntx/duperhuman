@@ -1,6 +1,6 @@
 # Superhuman Clone
 
-A private, self-hostable email client that recreates Superhuman's aesthetic and keyboard-first experience. Connects to your own IMAP/SMTP accounts.
+A private, self-hostable email client that recreates Superhuman's aesthetic and keyboard-first experience. Connects to Gmail through Google OAuth or to your own IMAP/SMTP accounts.
 
 ## Stack
 
@@ -13,6 +13,7 @@ A private, self-hostable email client that recreates Superhuman's aesthetic and 
 | Animations | Framer Motion | Spring physics, no janky transitions |
 | Icons | Phosphor Icons | Light-weight, consistent stroke |
 | Backend | Fastify + Node.js | Fastest Node HTTP framework |
+| Gmail | Google OAuth + Gmail API | No app password needed for Gmail accounts |
 | IMAP | node-imap + mailparser | Battle-tested IMAP bridge |
 | SMTP | nodemailer | Universal mailer |
 | Fonts | Geist / Geist Mono | Closest public match to Superhuman's typography feel |
@@ -29,19 +30,19 @@ superhuman-clone/
 │       ├── hooks/        # useKeyboard, useVirtualList
 │       ├── lib/          # API client, MiniSearch wrapper, utils
 │       └── types/        # Shared TypeScript interfaces
-└── server/               # Fastify IMAP/SMTP bridge
+└── server/               # Fastify Gmail API + IMAP/SMTP bridge
     └── src/
         ├── routes/       # /accounts, /emails, /search, /sync
-        └── services/     # imap.ts, smtp.ts, sync.ts (cache + polling)
+        └── services/     # gmail.ts, imap.ts, smtp.ts, sync.ts (cache + polling)
 ```
 
-**Local-first flow:** On load the UI reads from IndexedDB instantly (0ms), then a background sync fetches from IMAP and merges updates. All mutations (archive, delete, star, read) apply optimistically to the local store first, then flush to the server.
+**Local-first flow:** On load the UI reads from IndexedDB instantly (0ms), then a background sync fetches from the Gmail API or IMAP and merges updates. All mutations (archive, delete, star, read) apply optimistically to the local store first, then flush to the server.
 
 ## 10-Step Setup
 
 ### Prerequisites
 - Node.js ≥ 20
-- An email account with IMAP/SMTP access and an **App Password** (not your main password)
+- A Google Cloud OAuth client for Gmail, or an email account with IMAP/SMTP access and an **App Password** (not your main password)
 
 ---
 
@@ -62,9 +63,32 @@ cp .env.example .env
 
 **Step 4 — Fill in your credentials**
 
-Open `.env` and set your IMAP/SMTP details. For Gmail:
+For Gmail, OAuth is the recommended path. In Google Cloud Console:
+
+1. Create or select a project.
+2. Enable the Gmail API.
+3. Configure the OAuth consent screen. In development, add your Gmail address as a test user.
+4. Create an OAuth client ID with application type **Web application**.
+5. Add this exact authorized redirect URI:
+
+```text
+http://127.0.0.1:3001/api/auth/google/callback
+```
+
+Then add the OAuth credentials to `.env`:
 
 ```env
+GOOGLE_CLIENT_ID=your_client_id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your_client_secret
+GOOGLE_REDIRECT_URI=http://127.0.0.1:3001/api/auth/google/callback
+```
+
+The app requests Gmail modify/send permissions so it can read, triage, archive, label, and send mail through the Gmail API.
+
+For IMAP/SMTP instead, open `.env` and set your server details. For Gmail app-password mode:
+
+```env
+ENABLE_DEFAULT_IMAP_ACCOUNT=true
 IMAP_HOST=imap.gmail.com
 IMAP_PORT=993
 IMAP_TLS=true
@@ -104,13 +128,15 @@ Navigate to [http://localhost:3000](http://localhost:3000).
 
 If you pre-filled `.env`, your inbox starts loading immediately. Otherwise the setup screen appears — enter your credentials there.
 
+For Gmail OAuth, click **Connect Gmail with Google**. If the app says OAuth setup is needed, copy the redirect URI it shows into your Google Cloud OAuth client, add `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` to `.env`, then restart the server.
+
 **Step 8 — Wait for initial sync**
 
-The first sync fetches your latest 200 emails from IMAP. The inbox renders as soon as the first batch arrives. Subsequent syncs run every 30 seconds in the background.
+The first sync fetches your latest 200 emails from the Gmail API or IMAP. The inbox renders as soon as the first batch arrives. Subsequent syncs run every 30 seconds in the background.
 
 **Step 9 — Start using keyboard shortcuts**
 
-Press `?` to see all shortcuts. Press `J`/`K` to navigate, `Enter` to open an email.
+Press `?` to see all shortcuts. Press `J`/`K` to move one email at a time, `Shift+J`/`Shift+K` to jump through the list, and `Space`/`Shift+Space` to scroll the email preview.
 
 **Step 10 — (Optional) Production build**
 ```bash
@@ -128,6 +154,10 @@ npm start --workspace=server   # serves API on :3001
 |-----|--------|
 | `J` | Next email |
 | `K` | Previous email |
+| `Shift+J` | Jump down email list |
+| `Shift+K` | Jump up email list |
+| `Space` | Scroll email preview down |
+| `Shift+Space` | Scroll email preview up |
 | `Enter` | Open focused email |
 | `U` | Back to inbox / deselect |
 | `G` `I` | Go to Inbox |
@@ -167,7 +197,7 @@ npm start --workspace=server   # serves API on :3001
 
 ## Connecting Multiple Accounts
 
-Multiple accounts can be added via the setup screen or by calling the API directly:
+Multiple accounts can be added from the account dialog. Gmail accounts use **Connect Gmail with Google**; IMAP accounts can also be added by calling the API directly:
 
 ```bash
 curl -X POST http://localhost:3001/api/accounts \
@@ -213,7 +243,8 @@ Based on the official Superhuman DESIGN.md specification:
 ## Limitations & Notes
 
 - **Single user** — no multi-tenant auth. Run it locally; don't expose to the internet without adding authentication.
-- **App passwords required** — OAuth flows for Gmail/Google Workspace are not included but can be added by wiring up `nodemailer-google-oauth2`.
+- **Google verification** — using Gmail OAuth outside your own test users may require Google app verification because the app requests Gmail read/modify/send scopes.
+- **App passwords still work for IMAP** — Gmail/Google Workspace can also be connected with app passwords if IMAP is enabled in Gmail settings.
 - **Snooze resurface** — snooze stores the target time in IndexedDB. A background `setInterval` resurfaces emails on the client. For reliable server-side resurface, add a cron job.
 - **Attachments** — metadata is shown; download links require adding a `/api/emails/:id/attachments/:index` route.
 - **Search** — local MiniSearch covers cached emails. For full historical search across all mail, the server-side `/search` endpoint does a naive substring match against the warm cache.

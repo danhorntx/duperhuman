@@ -2,6 +2,7 @@ import { lazy, Suspense, useState, useEffect } from 'react'
 import { Sidebar }         from './Sidebar'
 import { TopBar }          from './TopBar'
 import { EmailList }       from '@/components/email/EmailList'
+import { InboxSplitBar }   from '@/components/email/InboxSplitBar'
 import { EmailThread }     from '@/components/email/EmailThread'
 import { ShortcutsOverlay } from '@/components/overlays/ShortcutsOverlay'
 import { SnoozeModal }     from '@/components/overlays/SnoozeModal'
@@ -17,8 +18,9 @@ const LabelManager = lazy(() => import('@/components/labels/LabelManager').then(
 
 export function AppLayout() {
   const [showAddAccount, setShowAddAccount] = useState(false)
-  const view       = useUiStore(s => s.view)
-  const openMail   = useUiStore(s => s.openMailView)
+	  const view       = useUiStore(s => s.view)
+	  const openMail   = useUiStore(s => s.openMailView)
+  const keyHint    = useUiStore(s => s.keyHint)
 
   // Esc returns to mail view from any sub-view
   useEffect(() => {
@@ -40,9 +42,10 @@ export function AppLayout() {
             <>
               <TopBar />
               <div className="flex flex-1 overflow-hidden">
-                <div className="email-list-pane">
-                  <EmailList />
-                </div>
+	                <div className="email-list-pane">
+                  <InboxSplitBar />
+	                  <EmailList />
+	                </div>
                 <div className="email-thread-pane">
                   <EmailThread />
                 </div>
@@ -64,9 +67,15 @@ export function AppLayout() {
       <ShortcutsOverlay />
       <SnoozeModal />
       <LabelDialog />
-      <ToastStack />
+	      <ToastStack />
+      {keyHint && (
+        <div className="key-hint-popover" aria-live="polite">
+          <kbd>{keyHint.toUpperCase()}</kbd>
+          <span>waiting for next key</span>
+        </div>
+      )}
 
-      {showAddAccount && (
+	      {showAddAccount && (
         <AddAccountModal onClose={() => setShowAddAccount(false)} />
       )}
     </>

@@ -141,6 +141,36 @@ export interface OutboxEmail {
   lastError?: string
 }
 
+export type MailMutationType =
+  | 'archive'
+  | 'trash'
+  | 'restore'
+  | 'markRead'
+  | 'star'
+  | 'spam'
+  | 'snooze'
+  | 'mute'
+  | 'label'
+
+export interface MailMutation {
+  id: string
+  accountId: string
+  type: MailMutationType
+  ids: string[]
+  payload?: {
+    read?: boolean
+    starred?: boolean
+    until?: number
+    threadId?: string
+    labels?: string[]
+  }
+  createdAt: number
+  updatedAt: number
+  attempts: number
+  status: 'queued' | 'sending' | 'failed'
+  lastError?: string
+}
+
 export interface FollowUpReminder {
   id: string
   emailId: string

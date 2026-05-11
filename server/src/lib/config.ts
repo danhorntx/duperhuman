@@ -1,4 +1,13 @@
-import 'dotenv/config'
+import dotenv from 'dotenv'
+import path from 'path'
+import { fileURLToPath } from 'url'
+
+const moduleDir = path.dirname(fileURLToPath(import.meta.url))
+dotenv.config({ path: path.resolve(moduleDir, '../../..', '.env') })
+dotenv.config()
+
+const googleOAuthConfigured = !!process.env.GOOGLE_CLIENT_ID && !!process.env.GOOGLE_CLIENT_SECRET
+const defaultImapEnabled = process.env.ENABLE_DEFAULT_IMAP_ACCOUNT === 'true' || !googleOAuthConfigured
 
 export const config = {
   port: parseInt(process.env.PORT ?? '3001', 10),
@@ -15,7 +24,7 @@ export const config = {
   userDataDir: process.env.DUPERHUMAN_USER_DATA ?? process.cwd(),
 
   // Default account from env (can also be configured via API)
-  defaultAccount: process.env.IMAP_USER
+  defaultAccount: defaultImapEnabled && process.env.IMAP_USER
     ? {
         id: 'default',
         name: process.env.SMTP_FROM_NAME ?? 'User',

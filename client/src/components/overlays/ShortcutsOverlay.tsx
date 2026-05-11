@@ -8,6 +8,10 @@ const SHORTCUTS = [
     items: [
       { keys: ['J'], description: 'Next email' },
       { keys: ['K'], description: 'Previous email' },
+      { keys: ['⇧', 'J'], description: 'Jump down email list' },
+      { keys: ['⇧', 'K'], description: 'Jump up email list' },
+      { keys: ['Space'], description: 'Scroll email preview down' },
+      { keys: ['⇧', 'Space'], description: 'Scroll email preview up' },
       { keys: ['Enter'], description: 'Open focused email' },
       { keys: ['U'], description: 'Back to inbox / deselect' },
       { keys: ['G', 'I'], description: 'Go to Inbox' },

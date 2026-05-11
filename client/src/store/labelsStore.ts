@@ -145,7 +145,7 @@ export function defaultLabelInput(accountId: string): Omit<CustomLabel, 'id' | '
   return {
     accountId,
     name:        'New label',
-    color:       '#cbb7fb',
+    color:       '#8fb3ff',
     rules:       [emptyRule()],
     conjunction: 'AND' as RuleConjunction,
   }

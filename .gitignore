@@ -4,6 +4,7 @@
 .env
 .env.*
 !.env.example
+gmail-accounts.enc.json
 
 # Dependencies
 node_modules/

@@ -98,14 +98,80 @@ function parseAddress(addr: MailAddr): { name: string; address: string }[] {
   return (addr.value ?? []).map(a => ({ name: a.name ?? '', address: a.address ?? '' }))
 }
 
-// ─── Fetch a batch of messages as full RFC822 ─────────────────────────────────
+type FetchMode = 'headers' | 'full'
 
-function fetchRange(imap: Imap, seqRange: string, accountId: string, folder: string): Promise<FetchedEmail[]> {
+function toFetchedEmail(raw: Buffer, flags: string[], uid: number, accountId: string, folder: string, mode: FetchMode): Promise<FetchedEmail | null> {
+  return simpleParser(raw)
+    .then(parsed => {
+      const flagsObj = {
+        seen:     flags.includes('\\Seen'),
+        answered: flags.includes('\\Answered'),
+        flagged:  flags.includes('\\Flagged'),
+        deleted:  flags.includes('\\Deleted'),
+        draft:    flags.includes('\\Draft'),
+      }
+      const fromAddrs = parseAddress(parsed.from as MailAddr)
+      const from = fromAddrs[0] ?? { name: '', address: '' }
+      const bodyText = mode === 'full' ? (parsed.text ?? '') : ''
+      const snippet = bodyText
+        ? bodyText.slice(0, 200).replace(/\s+/g, ' ').trim()
+        : ''
+      const emailId = `${accountId}:${folder}:${uid}`
+
+      return {
+        id: emailId,
+        accountId,
+        uid,
+        folder,
+        messageId: (parsed.messageId as string | undefined) ?? emailId,
+        threadId: deriveThreadId(parsed),
+        subject: parsed.subject ?? '(no subject)',
+        from,
+        to: parseAddress(parsed.to as MailAddr),
+        cc: parseAddress(parsed.cc as MailAddr),
+        bcc: parseAddress(parsed.bcc as MailAddr),
+        date: parsed.date?.getTime() ?? Date.now(),
+        receivedAt: Date.now(),
+        snippet,
+        bodyHtml: mode === 'full' && typeof parsed.html === 'string' ? parsed.html : '',
+        bodyText,
+        attachments: mode === 'full'
+          ? (parsed.attachments ?? []).map(a => ({
+              filename: a.filename ?? 'attachment',
+              contentType: a.contentType,
+              size: a.size,
+            }))
+          : [],
+        labels: [],
+        flags: flagsObj,
+        isRead:     flagsObj.seen,
+        isStarred:  flagsObj.flagged,
+        isArchived: false,
+        isTrashed:  folder.toLowerCase().includes('trash'),
+        isSpam:     folder.toLowerCase().includes('spam'),
+        isMuted:    false,
+        isDraft:    flagsObj.draft || folder.toLowerCase().includes('draft'),
+        snoozedUntil:    undefined,
+        scheduledSendAt: undefined,
+        syncedAt: Date.now(),
+      }
+    })
+    .catch(err => {
+      console.error(`Parse error uid=${uid}:`, err)
+      return null
+    })
+}
+
+// ─── Fetch a batch of messages. List views use headers only; body fetch is lazy.
+
+function fetchRange(imap: Imap, seqRange: string, accountId: string, folder: string, mode: FetchMode): Promise<FetchedEmail[]> {
   return new Promise((resolve, reject) => {
     const results: Map<number, { raw: Buffer; flags: string[]; uid: number }> = new Map()
 
     const fetcher = imap.seq.fetch(seqRange, {
-      bodies: '',         // fetch entire RFC822 message
+      bodies: mode === 'full'
+        ? ''
+        : 'HEADER.FIELDS (FROM TO CC BCC SUBJECT DATE MESSAGE-ID REFERENCES IN-REPLY-TO)',
       markSeen: false,
       struct: false,
     })
@@ -128,67 +194,13 @@ function fetchRange(imap: Imap, seqRange: string, accountId: string, folder: str
     })
 
     fetcher.once('error', reject)
-    fetcher.once('end', async () => {
-      const emails: FetchedEmail[] = []
+	    fetcher.once('end', async () => {
+	      const emails = (await Promise.all(
+          [...results.values()].map(({ raw, flags, uid }) => toFetchedEmail(raw, flags, uid, accountId, folder, mode)),
+        )).filter((email): email is FetchedEmail => !!email)
 
-      for (const { raw, flags, uid } of results.values()) {
-        try {
-          const parsed = await simpleParser(raw)
-          const flagsObj = {
-            seen:     flags.includes('\\Seen'),
-            answered: flags.includes('\\Answered'),
-            flagged:  flags.includes('\\Flagged'),
-            deleted:  flags.includes('\\Deleted'),
-            draft:    flags.includes('\\Draft'),
-          }
-          const fromAddrs = parseAddress(parsed.from as MailAddr)
-          const from = fromAddrs[0] ?? { name: '', address: '' }
-          const bodyText = parsed.text ?? ''
-          const snippet = bodyText.slice(0, 200).replace(/\s+/g, ' ').trim()
-          const emailId = `${accountId}:${folder}:${uid}`
-
-          emails.push({
-            id: emailId,
-            accountId,
-            uid,
-            folder,
-            messageId: (parsed.messageId as string | undefined) ?? emailId,
-            threadId: deriveThreadId(parsed),
-            subject: parsed.subject ?? '(no subject)',
-            from,
-            to: parseAddress(parsed.to as MailAddr),
-            cc: parseAddress(parsed.cc as MailAddr),
-            bcc: parseAddress(parsed.bcc as MailAddr),
-            date: parsed.date?.getTime() ?? Date.now(),
-            receivedAt: Date.now(),
-            snippet,
-            bodyHtml: typeof parsed.html === 'string' ? parsed.html : '',
-            bodyText,
-            attachments: (parsed.attachments ?? []).map(a => ({
-              filename: a.filename ?? 'attachment',
-              contentType: a.contentType,
-              size: a.size,
-            })),
-            labels: [],
-            flags: flagsObj,
-            isRead:     flagsObj.seen,
-            isStarred:  flagsObj.flagged,
-            isArchived: false,
-            isTrashed:  folder.toLowerCase().includes('trash'),
-            isSpam:     folder.toLowerCase().includes('spam'),
-            isMuted:    false,
-            isDraft:    flagsObj.draft || folder.toLowerCase().includes('draft'),
-            snoozedUntil:    undefined,
-            scheduledSendAt: undefined,
-            syncedAt: Date.now(),
-          })
-        } catch (err) {
-          console.error(`Parse error uid=${uid}:`, err)
-        }
-      }
-
-      resolve(emails.sort((a, b) => b.date - a.date))
-    })
+	      resolve(emails.sort((a, b) => b.date - a.date))
+	    })
   })
 }
 
@@ -198,7 +210,8 @@ export async function fetchEmails(
   account: ImapAccount,
   folder = 'INBOX',
   limit = 100,
-  offset = 0
+  offset = 0,
+  fetchBodies = false,
 ): Promise<FetchedEmail[]> {
   const imap = await getConnection(account)
 
@@ -213,8 +226,8 @@ export async function fetchEmails(
       const range = `${start}:${end}`
 
       try {
-        const emails = await fetchRange(imap, range, account.id, folder)
-        resolve(emails)
+	        const emails = await fetchRange(imap, range, account.id, folder, fetchBodies ? 'full' : 'headers')
+	        resolve(emails)
       } catch (fetchErr) {
         reject(fetchErr)
       }
@@ -294,6 +307,38 @@ export async function listFolders(account: ImapAccount): Promise<string[]> {
 export function closeConnection(accountId: string) {
   const conn = connections.get(accountId)
   if (conn) { conn.end(); connections.delete(accountId) }
+}
+
+export async function fetchEmailByUid(
+  account: ImapAccount,
+  folder: string,
+  uid: number,
+): Promise<FetchedEmail | null> {
+  const imap = await getConnection(account)
+
+  return new Promise((resolve, reject) => {
+    imap.openBox(folder, true, (err) => {
+      if (err) return reject(err)
+      const fetcher = imap.fetch(String(uid), { bodies: '', markSeen: false })
+      const chunks: Buffer[] = []
+      let flags: string[] = []
+
+      fetcher.on('message', (msg) => {
+        msg.on('body', (stream) => {
+          stream.on('data', (c: Buffer) => chunks.push(c))
+        })
+        msg.once('attributes', attrs => {
+          flags = attrs.flags ?? []
+        })
+      })
+      fetcher.once('error', reject)
+      fetcher.once('end', async () => {
+        if (chunks.length === 0) return resolve(null)
+        const email = await toFetchedEmail(Buffer.concat(chunks), flags, uid, account.id, folder, 'full')
+        resolve(email)
+      })
+    })
+  })
 }
 
 // ─── Single-message fetch (for attachment downloads / previews) ──────────────

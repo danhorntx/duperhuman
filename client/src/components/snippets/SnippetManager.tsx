@@ -152,7 +152,7 @@ function SnippetRow({ snippet, editing, onOpen, onSave, onDelete }: {
               onClick={() => onSave({ shortcut, name, body })}
               disabled={!dirty}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold disabled:opacity-40"
-              style={{ background: 'var(--accent)', color: '#1a0617' }}
+              style={{ background: 'var(--accent)', color: 'var(--accent-contrast)' }}
             >
               <CheckIcon size={11} weight="bold" /> Save
             </button>

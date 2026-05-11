@@ -8,7 +8,8 @@ import {
   DownloadSimpleIcon, EyeIcon,
 } from '@phosphor-icons/react'
 import { AttachmentPreview } from '@/components/email/AttachmentPreview'
-import { attachments as attachmentsApi } from '@/lib/api'
+import { attachments as attachmentsApi, emails as emailsApi } from '@/lib/api'
+import { db } from '@/db/db'
 import { Avatar } from '@/components/ui/Avatar'
 import { useEmailStore, selectSelectedEmail } from '@/store/emailStore'
 import { useUiStore } from '@/store/uiStore'
@@ -66,34 +67,70 @@ function EmailHeader({ email, expanded, onToggle }: { email: Email; expanded: bo
  *
  * sandbox: no allow-scripts (kills tracking pixels' JS, kills any inline JS),
  *          no allow-forms,    (kills credential phishing forms)
- *          no allow-popups,
  *          BUT allow-same-origin so the parent can read scrollHeight to size
- *          the frame to its content.
+ *          the frame and route safe links to the browser.
  */
-function EmailFrame({ html, theme, sender }: { html: string; theme: 'dark' | 'light'; sender: string }) {
+function EmailFrame({
+  html,
+  theme,
+  sender,
+  blockRemoteImages,
+  onBlockedImages,
+}: {
+  html: string
+  theme: 'dark' | 'light'
+  sender: string
+  blockRemoteImages: boolean
+  onBlockedImages: (count: number) => void
+}) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null)
   const [height, setHeight] = useState(120)
+
+  const normalizeExternalHref = (raw: string): string | null => {
+    const href = raw.trim()
+    if (/^https?:\/\//i.test(href) || /^(mailto|tel):/i.test(href)) return href
+    if (href.startsWith('//')) return `https:${href}`
+    return null
+  }
 
   // Sanitize first: even though the iframe sandbox blocks JS execution, we
   // strip <script>, on*= attrs, javascript: URIs, etc. before injecting so
   // we belt-and-suspenders against future protocol/sandbox bypasses and
   // strip CSS expression() that some renderers still honour.
-  const safeHtml = useMemo(
-    () =>
-      DOMPurify.sanitize(html, {
-        FORBID_TAGS:    ['script', 'iframe', 'object', 'embed', 'meta', 'link', 'base'],
-        FORBID_ATTR:    ['onload', 'onerror', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
-        ALLOW_DATA_ATTR: false,
-        ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|cid):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
-      }),
-    [html],
-  )
+  const safe = useMemo(() => {
+    const sanitized = DOMPurify.sanitize(html, {
+      FORBID_TAGS:    ['script', 'iframe', 'object', 'embed', 'meta', 'link', 'base'],
+      FORBID_ATTR:    ['onload', 'onerror', 'onclick', 'onmouseover', 'onfocus', 'onblur'],
+      ALLOW_DATA_ATTR: false,
+      ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|cid):|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,
+    })
+    if (!blockRemoteImages) {
+      return { html: sanitized, blocked: 0 }
+    }
+    const wrapper = document.createElement('div')
+    wrapper.innerHTML = sanitized
+    let blocked = 0
+    wrapper.querySelectorAll('img').forEach(img => {
+      const src = img.getAttribute('src') ?? ''
+      if (!/^https?:\/\//i.test(src)) return
+      blocked += 1
+      img.setAttribute('data-blocked-src', src)
+      img.removeAttribute('src')
+      img.setAttribute('alt', img.getAttribute('alt') || 'Remote image blocked')
+      img.setAttribute('style', `${img.getAttribute('style') ?? ''};display:none!important;`)
+    })
+    return { html: wrapper.innerHTML, blocked }
+  }, [html, blockRemoteImages, onBlockedImages])
+
+  useEffect(() => {
+    onBlockedImages(safe.blocked)
+  }, [safe.blocked, onBlockedImages])
 
   const isDark   = theme === 'dark'
   const bgColor  = isDark ? 'transparent'                : '#ffffff'
   const fgColor  = isDark ? '#e8e6f0'                    : '#1a1a1a'
-  const linkColor = isDark ? '#cbb7fb'                   : '#5b3eba'
-  const blockBorder = isDark ? 'rgba(203,183,251,0.35)'  : 'rgba(91,62,186,0.35)'
+  const linkColor = isDark ? '#8fb3ff'                   : '#315fa9'
+  const blockBorder = isDark ? 'rgba(143,179,255,0.35)'  : 'rgba(49,95,169,0.35)'
   const blockText  = isDark ? 'rgba(232,230,240,0.7)'    : 'rgba(26,26,26,0.7)'
 
   // Wrap the email HTML in a minimal document that resets defaults and applies
@@ -124,7 +161,7 @@ function EmailFrame({ html, theme, sender }: { html: string; theme: 'dark' | 'li
   }
 </style>
 </head>
-<body>${safeHtml}</body>
+<body>${safe.html}</body>
 </html>`
 
   // Re-measure whenever the iframe loads or its contents change. We use a
@@ -136,6 +173,7 @@ function EmailFrame({ html, theme, sender }: { html: string; theme: 'dark' | 'li
 
     let observer: ResizeObserver | null = null
     let cancelled = false
+    let removeLinkHandler: (() => void) | null = null
 
     const measure = () => {
       if (cancelled) return
@@ -152,6 +190,28 @@ function EmailFrame({ html, theme, sender }: { html: string; theme: 'dark' | 'li
       if (!doc?.body) return
       observer = new ResizeObserver(measure)
       observer.observe(doc.body)
+
+      doc.querySelectorAll<HTMLAnchorElement>('a[href]').forEach(anchor => {
+        anchor.setAttribute('target', '_blank')
+        anchor.setAttribute('rel', 'noopener noreferrer')
+      })
+
+      const onLinkClick = (event: MouseEvent) => {
+        const target = event.target instanceof Element ? event.target : null
+        const anchor = target?.closest('a[href]') as HTMLAnchorElement | null
+        if (!anchor) return
+
+        const href = normalizeExternalHref(anchor.getAttribute('href') ?? '')
+        if (!href) return
+
+        event.preventDefault()
+        event.stopPropagation()
+        window.open(href, '_blank', 'noopener,noreferrer')
+      }
+
+      doc.addEventListener('click', onLinkClick)
+      removeLinkHandler = () => doc.removeEventListener('click', onLinkClick)
+
       // Also re-measure once images have loaded
       doc.querySelectorAll('img').forEach(img => {
         if (!(img as HTMLImageElement).complete) {
@@ -165,6 +225,7 @@ function EmailFrame({ html, theme, sender }: { html: string; theme: 'dark' | 'li
     return () => {
       cancelled = true
       iframe.removeEventListener('load', onLoad)
+      removeLinkHandler?.()
       observer?.disconnect()
     }
   }, [html])
@@ -173,7 +234,7 @@ function EmailFrame({ html, theme, sender }: { html: string; theme: 'dark' | 'li
     <iframe
       ref={iframeRef}
       title={`Email content from ${sender}`}
-      sandbox="allow-same-origin"
+      sandbox="allow-same-origin allow-popups allow-popups-to-escape-sandbox"
       srcDoc={srcDoc}
       style={{
         width:  '100%',
@@ -190,13 +251,13 @@ function EmailFrame({ html, theme, sender }: { html: string; theme: 'dark' | 'li
 
 const THEME_PREF_KEY = 'duperhuman:emailTheme'
 
-function getThemePref(senderDomain: string): 'dark' | 'light' {
+function getThemePref(senderDomain: string, defaultTheme: 'dark' | 'light'): 'dark' | 'light' {
   try {
     const raw = localStorage.getItem(THEME_PREF_KEY)
-    if (!raw) return 'dark'
+    if (!raw) return defaultTheme
     const map = JSON.parse(raw) as Record<string, 'dark' | 'light'>
-    return map[senderDomain] ?? 'dark'
-  } catch { return 'dark' }
+    return map[senderDomain] ?? defaultTheme
+  } catch { return defaultTheme }
 }
 
 function setThemePref(senderDomain: string, theme: 'dark' | 'light') {
@@ -209,14 +270,37 @@ function setThemePref(senderDomain: string, theme: 'dark' | 'light') {
 }
 
 function EmailBody({ email }: { email: Email }) {
-  const senderDomain = email.from.address.split('@')[1] ?? ''
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => getThemePref(senderDomain))
+  const [hydratedEmail, setHydratedEmail] = useState(email)
+  const senderDomain = hydratedEmail.from.address.split('@')[1] ?? ''
+  const emailPreviewTheme = useUiStore(s => s.settings.emailPreviewTheme)
+  const automaticallyLoadImages = useUiStore(s => s.settings.automaticallyLoadImages)
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => getThemePref(senderDomain, emailPreviewTheme))
   const [previewIdx, setPreviewIdx] = useState<number | null>(null)
+  const [blockRemoteImages, setBlockRemoteImages] = useState(() => !automaticallyLoadImages)
+  const [blockedImages, setBlockedImages] = useState(0)
+
+  useEffect(() => {
+    setHydratedEmail(email)
+    if (email.bodyHtml || email.bodyText) return
+    let cancelled = false
+    emailsApi.get(email.id)
+      .then(async full => {
+        if (cancelled) return
+        setHydratedEmail(full)
+        await db.emails.put(full)
+      })
+      .catch(err => console.error('[thread] body hydrate failed', err))
+    return () => { cancelled = true }
+  }, [email])
 
   // Pick up the per-domain saved preference whenever the email changes
   useEffect(() => {
-    setTheme(getThemePref(senderDomain))
-  }, [senderDomain])
+    setTheme(getThemePref(senderDomain, emailPreviewTheme))
+  }, [senderDomain, emailPreviewTheme])
+
+  useEffect(() => {
+    setBlockRemoteImages(!automaticallyLoadImages)
+  }, [hydratedEmail.id, automaticallyLoadImages])
 
   const toggleTheme = () => {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -228,19 +312,30 @@ function EmailBody({ email }: { email: Email }) {
     <div className="px-4 pb-4">
       {/* Metadata */}
       <div className="mb-3 text-xs text-[var(--text-muted)] space-y-0.5">
-        <div><span className="text-[var(--text-disabled)]">From:</span>{' '}{email.from.name} &lt;{email.from.address}&gt;</div>
-        <div><span className="text-[var(--text-disabled)]">To:</span>{' '}{email.to.map(a => `${a.name} <${a.address}>`).join(', ')}</div>
-        {email.cc.length > 0 && (
-          <div><span className="text-[var(--text-disabled)]">Cc:</span>{' '}{email.cc.map(a => `${a.name} <${a.address}>`).join(', ')}</div>
+        <div><span className="text-[var(--text-disabled)]">From:</span>{' '}{hydratedEmail.from.name} &lt;{hydratedEmail.from.address}&gt;</div>
+        <div><span className="text-[var(--text-disabled)]">To:</span>{' '}{hydratedEmail.to.map(a => `${a.name} <${a.address}>`).join(', ')}</div>
+        {hydratedEmail.cc.length > 0 && (
+          <div><span className="text-[var(--text-disabled)]">Cc:</span>{' '}{hydratedEmail.cc.map(a => `${a.name} <${a.address}>`).join(', ')}</div>
         )}
-        <div><span className="text-[var(--text-disabled)]">Date:</span>{' '}{formatFullDate(email.date)}</div>
+        <div><span className="text-[var(--text-disabled)]">Date:</span>{' '}{formatFullDate(hydratedEmail.date)}</div>
       </div>
 
-      {/* Theme toggle (only shows for HTML emails — plain text doesn't need it) */}
-      {email.bodyHtml && (
-        <div className="flex justify-end mb-2">
-          <button
-            onClick={toggleTheme}
+	      {/* Theme toggle (only shows for HTML emails — plain text doesn't need it) */}
+	      {hydratedEmail.bodyHtml && (
+	        <div className="flex items-center justify-between gap-2 mb-2">
+          {blockedImages > 0 && blockRemoteImages ? (
+            <div className="text-[11px] text-[var(--text-muted)]">
+              {blockedImages} remote image{blockedImages === 1 ? '' : 's'} blocked
+              <button
+                onClick={() => setBlockRemoteImages(false)}
+                className="ml-2 text-[var(--accent)] hover:underline"
+              >
+                Load images
+              </button>
+            </div>
+          ) : <div />}
+	          <button
+	            onClick={toggleTheme}
             title={theme === 'dark' ? 'Switch to light theme for this sender' : 'Switch to dark theme for this sender'}
             className="flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-colors"
             style={{
@@ -258,23 +353,31 @@ function EmailBody({ email }: { email: Email }) {
       {/* Body — HTML emails go through a sandboxed iframe so their <style>
           tags / wide tables / absolute positioning can't escape and reflow
           the host app. Plain-text bodies render inline (no escape risk). */}
-      {email.bodyHtml ? (
-        <EmailFrame html={email.bodyHtml} theme={theme} sender={email.from.address} />
-      ) : (
-        <pre className="email-prose whitespace-pre-wrap font-sans">{email.bodyText}</pre>
-      )}
+	      {!hydratedEmail.bodyHtml && !hydratedEmail.bodyText ? (
+        <div className="email-prose text-[var(--text-muted)]">Loading message body…</div>
+      ) : hydratedEmail.bodyHtml ? (
+	        <EmailFrame
+            html={hydratedEmail.bodyHtml}
+            theme={theme}
+            sender={hydratedEmail.from.address}
+            blockRemoteImages={blockRemoteImages}
+            onBlockedImages={setBlockedImages}
+          />
+	      ) : (
+	        <pre className="email-prose whitespace-pre-wrap font-sans">{hydratedEmail.bodyText}</pre>
+	      )}
 
-      {/* Attachments */}
-      {email.attachments.length > 0 && (
+	      {/* Attachments */}
+	      {hydratedEmail.attachments.length > 0 && (
         <div className="mt-4 pt-4 border-t border-[var(--border-subtle)]">
           <div className="flex items-center gap-1.5 mb-2">
             <PaperclipIcon size={12} style={{ color: 'var(--text-muted)' }} />
             <span className="text-xs text-[var(--text-muted)] font-medium">
-              {email.attachments.length} attachment{email.attachments.length > 1 ? 's' : ''}
+	              {hydratedEmail.attachments.length} attachment{hydratedEmail.attachments.length > 1 ? 's' : ''}
             </span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {email.attachments.map((att, i) => {
+	            {hydratedEmail.attachments.map((att, i) => {
               const ct = att.contentType ?? ''
               const canPreview = ct.startsWith('image/') || ct === 'application/pdf'
               return (
@@ -288,7 +391,7 @@ function EmailBody({ email }: { email: Email }) {
                   }}
                 >
                   <button
-                    onClick={() => canPreview ? setPreviewIdx(i) : window.open(attachmentsApi.url(email.id, i, { download: true }))}
+	                    onClick={() => canPreview ? setPreviewIdx(i) : window.open(attachmentsApi.url(hydratedEmail.id, i, { download: true }))}
                     className="flex items-center gap-2 min-w-0"
                     title={canPreview ? `Preview ${att.filename}` : `Download ${att.filename}`}
                   >
@@ -309,7 +412,7 @@ function EmailBody({ email }: { email: Email }) {
                     </button>
                   )}
                   <a
-                    href={attachmentsApi.url(email.id, i, { download: true })}
+	                    href={attachmentsApi.url(hydratedEmail.id, i, { download: true })}
                     download={att.filename}
                     title="Download"
                     className="p-1 rounded transition-all opacity-0 group-hover:opacity-100 hover:bg-[var(--bg-overlay)]"
@@ -326,9 +429,9 @@ function EmailBody({ email }: { email: Email }) {
 
       <AttachmentPreview
         open={previewIdx !== null}
-        emailId={email.id}
-        index={previewIdx ?? 0}
-        attachment={previewIdx !== null ? (email.attachments[previewIdx] ?? null) : null}
+	        emailId={hydratedEmail.id}
+	        index={previewIdx ?? 0}
+	        attachment={previewIdx !== null ? (hydratedEmail.attachments[previewIdx] ?? null) : null}
         onClose={() => setPreviewIdx(null)}
       />
     </div>
@@ -355,9 +458,9 @@ function ActionBar({ email }: { email: Email }) {
     },
     {
       icon: <ArrowBendDoubleUpLeftIcon size={14} />,
-      label: 'Reply all',
-      shortcut: 'A',
-      onClick: () => openCompose({ replyToId: email.id }),
+	      label: 'Reply all',
+	      shortcut: 'A',
+	      onClick: () => openCompose({ replyToId: email.id, replyAll: true }),
     },
     {
       icon: <ArrowBendUpRightIcon size={14} />,
@@ -439,11 +542,29 @@ export function EmailThread({ email: overrideEmail }: EmailThreadProps = {}) {
   const storeEmail = useEmailStore(selectSelectedEmail)
   const email = overrideEmail ?? storeEmail
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set())
+  const [threadEmails, setThreadEmails] = useState<Email[]>([])
 
   // Auto-expand the latest email
   useEffect(() => {
     if (email) setExpandedIds(new Set([email.id]))
   }, [email?.id])
+
+  useEffect(() => {
+    if (!email) {
+      setThreadEmails([])
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      const rows = await db.emails
+        .where('threadId').equals(email.threadId)
+        .filter(row => row.accountId === email.accountId)
+        .sortBy('date')
+      const ordered = rows.length > 0 ? rows : [email]
+      if (!cancelled) setThreadEmails(ordered)
+    })()
+    return () => { cancelled = true }
+  }, [email])
 
   if (!email) {
     return (
@@ -457,18 +578,19 @@ export function EmailThread({ email: overrideEmail }: EmailThreadProps = {}) {
         <div className="text-center">
           <p className="text-sm font-medium text-[var(--text-secondary)] mb-1">No email selected</p>
           <p className="text-xs text-[var(--text-muted)]">
-            Press <kbd>J</kbd> / <kbd>K</kbd> to navigate, <kbd>Enter</kbd> to open
+            Press <kbd>J</kbd> / <kbd>K</kbd> to navigate, <kbd>Space</kbd> to read
           </p>
         </div>
       </div>
     )
   }
 
-  const isExpanded = expandedIds.has(email.id)
-  const toggle = () =>
+  const visibleThread = threadEmails.length > 0 ? threadEmails : [email]
+  const latestEmail = visibleThread[visibleThread.length - 1] ?? email
+  const toggle = (id: string) =>
     setExpandedIds(prev => {
       const next = new Set(prev)
-      next.has(email.id) ? next.delete(email.id) : next.add(email.id)
+      next.has(id) ? next.delete(id) : next.add(id)
       return next
     })
 
@@ -483,36 +605,48 @@ export function EmailThread({ email: overrideEmail }: EmailThreadProps = {}) {
           className="text-base font-semibold text-[var(--text-primary)] leading-snug"
           style={{ letterSpacing: '-0.02em' }}
         >
-          {email.subject}
-        </h2>
-      </div>
+	          {email.subject || '(no subject)'}
+	        </h2>
+        {visibleThread.length > 1 && (
+          <div className="mt-1 text-[11px] text-[var(--text-muted)]">
+            {visibleThread.length} messages in this conversation
+          </div>
+        )}
+	      </div>
 
       {/* Thread body — scrollable */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" data-email-preview-scroll>
         <motion.div
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15, ease: [0.32, 0.72, 0, 1] }}
         >
-          <EmailHeader email={email} expanded={isExpanded} onToggle={toggle} />
-          <AnimatePresence>
-            {isExpanded && (
-              <motion.div
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
-                style={{ overflow: 'hidden' }}
-              >
-                <EmailBody email={email} />
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </motion.div>
-      </div>
+          {visibleThread.map(message => {
+            const isExpanded = expandedIds.has(message.id)
+            return (
+              <div key={message.id} className="border-b border-[var(--border-subtle)] last:border-b-0">
+                <EmailHeader email={message} expanded={isExpanded} onToggle={() => toggle(message.id)} />
+                <AnimatePresence initial={false}>
+                  {isExpanded && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      transition={{ duration: 0.18, ease: [0.32, 0.72, 0, 1] }}
+                      style={{ overflow: 'hidden' }}
+                    >
+                      <EmailBody email={message} />
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            )
+          })}
+	        </motion.div>
+	      </div>
 
-      {/* Action bar */}
-      <ActionBar email={email} />
+	      {/* Action bar */}
+	      <ActionBar email={latestEmail} />
     </div>
   )
 }

@@ -11,6 +11,12 @@ import crypto from 'crypto'
 const ROUTE_HARD_TIMEOUT_MS = 25_000
 const GOOGLE_OAUTH_STATE_TTL_MS = 10 * 60_000
 const googleOAuthStates = new Set<string>()
+const GOOGLE_GMAIL_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/userinfo.email',
+  'https://www.googleapis.com/auth/userinfo.profile',
+]
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -42,6 +48,26 @@ function redactedAccount(account: StoredAccount) {
       progress: 100,
     },
   }
+}
+
+function googleOAuthStatus() {
+  const missing: string[] = []
+  if (!config.googleOAuth.clientId) missing.push('GOOGLE_CLIENT_ID')
+  if (!config.googleOAuth.clientSecret) missing.push('GOOGLE_CLIENT_SECRET')
+  return {
+    configured: missing.length === 0,
+    missing,
+    redirectUri: config.googleOAuth.redirectUri,
+    scopes: GOOGLE_GMAIL_SCOPES,
+  }
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
 }
 
 export async function accountRoutes(app: FastifyInstance) {
@@ -149,9 +175,37 @@ export async function accountRoutes(app: FastifyInstance) {
     }
 	  })
 
+  app.get('/auth/google/status', async () => googleOAuthStatus())
+
 	  app.get('/auth/google/start', async (_req, reply) => {
-	    if (!config.googleOAuth.clientId || !config.googleOAuth.clientSecret) {
-	      return reply.status(400).send({ error: 'Google OAuth is not configured' })
+    const status = googleOAuthStatus()
+	    if (!status.configured) {
+	      return reply.status(400).type('text/html').send(`
+          <!doctype html>
+          <html>
+            <head>
+              <meta charset="utf-8" />
+              <title>Google OAuth setup needed</title>
+              <style>
+                body { margin: 0; background: #101112; color: #f0f1f2; font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+                main { max-width: 720px; margin: 64px auto; padding: 0 24px; }
+                code { background: #1e2023; border: 1px solid rgba(255,255,255,.13); border-radius: 6px; padding: 2px 6px; color: #8fb3ff; }
+                .box { background: #161719; border: 1px solid rgba(255,255,255,.09); border-radius: 12px; padding: 20px; }
+              </style>
+            </head>
+            <body>
+              <main>
+                <div class="box">
+                  <h1>Google OAuth is not configured</h1>
+                  <p>Add these values to <code>.env</code> and restart the server:</p>
+                  <p><code>GOOGLE_CLIENT_ID</code><br/><code>GOOGLE_CLIENT_SECRET</code><br/><code>GOOGLE_REDIRECT_URI=${escapeHtml(status.redirectUri)}</code></p>
+                  <p>In Google Cloud Console, create a Web application OAuth client and add this exact authorized redirect URI:</p>
+                  <p><code>${escapeHtml(status.redirectUri)}</code></p>
+                </div>
+              </main>
+            </body>
+          </html>
+        `)
 	    }
 	    const state = crypto.randomBytes(12).toString('hex')
 	    googleOAuthStates.add(state)
@@ -163,12 +217,7 @@ export async function accountRoutes(app: FastifyInstance) {
 	      access_type: 'offline',
 	      prompt: 'consent',
 	      state,
-	      scope: [
-	        'https://www.googleapis.com/auth/gmail.modify',
-	        'https://www.googleapis.com/auth/gmail.send',
-	        'https://www.googleapis.com/auth/userinfo.email',
-	        'https://www.googleapis.com/auth/userinfo.profile',
-	      ].join(' '),
+	      scope: GOOGLE_GMAIL_SCOPES.join(' '),
 	    })
 	    return reply.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${qs}`)
 	  })
@@ -206,7 +255,33 @@ export async function accountRoutes(app: FastifyInstance) {
 	    }
 	    registerAccount(account)
 	    persistGmailAccount(account)
-	    return reply.type('text/html').send('<h1>Duperhuman connected Gmail</h1><p>You can close this window and return to Duperhuman.</p>')
+	    return reply.type('text/html').send(`
+        <!doctype html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <title>Duperhuman connected Gmail</title>
+            <style>
+              body { margin: 0; background: #101112; color: #f0f1f2; font: 14px/1.5 system-ui, -apple-system, BlinkMacSystemFont, sans-serif; }
+              main { max-width: 560px; margin: 80px auto; padding: 0 24px; text-align: center; }
+              button { border: 0; border-radius: 10px; padding: 10px 14px; background: #8fb3ff; color: #0b1220; font-weight: 700; cursor: pointer; }
+            </style>
+          </head>
+          <body>
+            <main>
+              <h1>Gmail connected</h1>
+              <p>You can return to Duperhuman now.</p>
+              <button onclick="window.close()">Close window</button>
+            </main>
+            <script>
+              try {
+                window.opener && window.opener.postMessage({ type: 'duperhuman:gmail-connected' }, '*');
+              } catch (err) {}
+              setTimeout(() => window.close(), 1000);
+            </script>
+          </body>
+        </html>
+      `)
 	  })
 	}
 
